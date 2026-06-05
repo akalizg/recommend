@@ -1,0 +1,93 @@
+"""
+Centralized configuration management using pydantic-settings.
+Loads from .env file and environment variables.
+"""
+import os
+from pathlib import Path
+from pydantic_settings import BaseSettings
+from functools import lru_cache
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+class Settings(BaseSettings):
+    # Application
+    app_name: str = "MovieLensRecommend"
+    app_version: str = "1.0.0"
+    debug: bool = True
+    log_level: str = "INFO"
+
+    # Server
+    host: str = "0.0.0.0"
+    port: int = 8000
+    workers: int = 4
+
+    # Redis
+    redis_host: str = "localhost"
+    redis_port: int = 6379
+    redis_db: int = 0
+    redis_password: str = ""
+    redis_max_connections: int = 50
+
+    # Redis TTL (seconds)
+    redis_ttl_user_profile: int = 3600
+    redis_ttl_recommend: int = 1800
+    redis_ttl_popular: int = 600
+    redis_ttl_topk: int = 300
+
+    # FAISS Index
+    faiss_index_path: str = str(PROJECT_ROOT / "models" / "faiss_hnsw.index")
+    faiss_dimension: int = 64
+    faiss_m: int = 32
+    faiss_ef_construction: int = 200
+    faiss_ef_search: int = 64
+
+    # HNSW
+    hnsw_m: int = 32
+    hnsw_ef_construction: int = 200
+    hnsw_ef_search: int = 64
+
+    # Embedding
+    embedding_dim: int = 64
+    embedding_model_path: str = str(PROJECT_ROOT / "models" / "embeddings.npz")
+
+    # Ranking
+    rank_model_path: str = str(PROJECT_ROOT / "models" / "xgb_rank_model.json")
+    rank_top_k: int = 100
+
+    # Feature
+    feature_cache_path: str = str(PROJECT_ROOT / "models" / "features.pkl")
+
+    # Data
+    movielens_data_dir: str = str(PROJECT_ROOT / "data" / "ml-latest-small")
+    movielens_url: str = "https://files.grouplens.org/datasets/movielens/ml-latest-small.zip"
+
+    # Recommendation
+    recall_top_k: int = 200
+    final_top_k: int = 20
+    popular_fallback_count: int = 50
+
+    model_config = {
+        "env_file": str(PROJECT_ROOT / ".env"),
+        "env_file_encoding": "utf-8",
+        "case_sensitive": False,
+    }
+
+    @property
+    def redis_url(self) -> str:
+        if self.redis_password:
+            return f"redis://:{self.redis_password}@{self.redis_host}:{self.redis_port}/{self.redis_db}"
+        return f"redis://{self.redis_host}:{self.redis_port}/{self.redis_db}"
+
+    @property
+    def models_dir(self) -> Path:
+        return PROJECT_ROOT / "models"
+
+    @property
+    def data_dir(self) -> Path:
+        return PROJECT_ROOT / "data"
+
+
+@lru_cache()
+def get_settings() -> Settings:
+    return Settings()
