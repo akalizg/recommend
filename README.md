@@ -1,858 +1,1758 @@
-# 🎬 MovieRec — 基于 FAISS + XGBoost 的工业级电影推荐系统
+# 基于 Spark、FAISS、LightGCN 与在线反馈闭环的电影多阶段推荐系统技术方案
 
-[![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.115-green.svg)](https://fastapi.tiangolo.com/)
-[![Vue](https://img.shields.io/badge/Vue-3.0-brightgreen.svg)](https://vuejs.org/)
-[![FAISS](https://img.shields.io/badge/FAISS-1.9.0-red.svg)](https://github.com/facebookresearch/faiss)
-[![XGBoost](https://img.shields.io/badge/XGBoost-2.1.4-orange.svg)](https://xgboost.readthedocs.io/)
-[![Redis](https://img.shields.io/badge/Redis-7.0-dc382d.svg)](https://redis.io/)
-[![Docker](https://img.shields.io/badge/Docker-Compose-2496ed.svg)](https://www.docker.com/)
-[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+## 一、项目名称
 
-**MovieRec** 是一个基于 MovieLens 数据集构建的工业级电影推荐系统，采用 **多阶段推荐架构**（召回 → 粗排 → 精排 → 重排），融合了 **协同过滤**、**向量检索** 和 **机器学习排序** 三大技术范式。
+本项目最终命名为：
 
----
+**基于 Spark 离线计算、FAISS 向量召回与 XGBoost 精排的电影多阶段推荐系统**
 
-## 📋 目录
+也可以在答辩中使用更完整的名称：
 
-- [系统架构](#-系统架构)
-- [推荐流程](#-推荐流程)
-- [技术栈](#-技术栈)
-- [核心算法详解](#-核心算法详解)
-  - [1. 矩阵分解 (Matrix Factorization)](#1-矩阵分解-matrix-factorization)
-  - [2. FAISS HNSW 近似最近邻检索](#2-faiss-hnsw-近似最近邻检索)
-  - [3. XGBoost 排序模型](#3-xgboost-排序模型)
-  - [4. Redis 缓存策略](#4-redis-缓存策略)
-- [项目结构](#-项目结构)
-- [快速开始](#-快速开始)
-  - [本地开发环境](#本地开发环境)
-  - [Docker 一键部署](#docker-一键部署)
-- [API 文档](#-api-文档)
-- [前端界面](#-前端界面)
-- [性能优化](#-性能优化)
-- [测试](#-测试)
-- [数据集](#-数据集)
-- [常见问题](#-常见问题)
-- [后续规划](#-后续规划)
-- [许可证](#-许可证)
+**融合多路召回、图神经网络召回、实时反馈与在线实验的电影个性化推荐平台**
 
 ---
 
-## 🏗 系统架构
+## 二、项目定位
 
-```
-                               ┌──────────────────────────┐
-                               │    MovieLens Dataset      │
-                               │  ratings / movies / tags  │
-                               └────────────┬─────────────┘
-                                            │
-                               ┌────────────▼─────────────┐
-                               │    Feature Pipeline       │
-                               │  • 数据清洗与校验         │
-                               │  • 用户/电影特征工程      │
-                               │  • 流派多热编码           │
-                               │  • 评分矩阵构建           │
-                               └────────────┬─────────────┘
-                                            │
-                               ┌────────────▼─────────────┐
-                               │  Matrix Factorization     │
-                               │  ALS 交替最小二乘法       │
-                               │  用户向量 ←→ 物品向量    │
-                               └────────────┬─────────────┘
-                                            │
-                               ┌────────────▼─────────────┐
-                               │  FAISS IndexHNSWFlat      │
-                               │  HNSW 图 + 精确距离计算   │
-                               │  余弦相似度 (内积)        │
-                               └────────────┬─────────────┘
-                                            │
-              ┌─────────────────┬───────────┼───────────┬─────────────────┐
-              │                 │           │           │                 │
-     ┌────────▼────────┐ ┌─────▼─────┐ ┌───▼────┐ ┌───▼──────┐ ┌───────▼──────┐
-     │  Recall Layer   │ │   Redis   │ │  Rank  │ │  Cache   │ │  FastAPI     │
-     │  FAISS HNSW     │ │  Cache    │ │ XGBoost│ │  Aside   │ │  REST API    │
-     │  Top-K ANN      │ │  Store    │ │ Rerank │ │  Pattern │ │  Gateway     │
-     └────────┬────────┘ └─────┬─────┘ └───┬────┘ └───┬──────┘ └───────┬──────┘
-              │                 │           │           │                 │
-              └─────────────────┴───────────┴───────────┴─────────────────┘
-                                            │
-                               ┌────────────▼─────────────┐
-                               │    Vue 3 + TailwindCSS    │
-                               │    Responsive SPA         │
-                               └──────────────────────────┘
-```
+本项目基于开源电影推荐系统 MovieRec 进行二次开发，目标不是简单实现一个电影推荐列表，而是构建一个完整的电影个性化推荐平台。
+
+系统以 MovieLens 数据集为基础，结合 Spark 离线数据处理、ALS 协同过滤、FAISS 向量召回、ItemCF 相似电影召回、LightGCN 图召回、热门召回、XGBoost 精排、MMR 多样性重排、推荐理由生成、Redis 缓存、FastAPI 推荐接口、Vue 前端展示、用户反馈闭环、A/B 实验和 Prometheus + Grafana 监控，形成一个较完整的工业级推荐系统缩小版。
+
+系统最终支持：
+
+1. 用户个性化电影推荐。
+2. 多路召回候选电影。
+3. LightGCN 图召回增强高阶协同信号。
+4. XGBoost 精排推荐结果。
+5. MMR 多样性重排。
+6. 推荐理由解释。
+7. 用户点赞、点踩、不感兴趣反馈。
+8. 离线推荐效果评估。
+9. 消融实验验证各模块有效性。
+10. A/B 实验对比不同推荐模型。
+11. 推荐接口延迟、缓存命中率、点击率等指标监控。
+12. 前端展示电影推荐、电影详情、用户画像、模型评估和实验结果。
 
 ---
 
-## 🔄 推荐流程
+## 三、系统总体架构
 
-一个完整的推荐请求经过以下流水线：
+系统采用“离线训练 + 在线推荐 + 实时反馈 + 效果评估”的整体架构。
 
+整体流程如下：
+
+```text
+MovieLens 数据集
+ratings.csv / movies.csv / tags.csv / links.csv
+        ↓
+Spark 离线数据处理层
+数据清洗、评分归一化、类型解析、训练测试集划分
+        ↓
+用户画像 / 电影画像构建
+        ↓
+多路召回层
+Embedding 召回 + ALS 协同过滤召回 + ItemCF 召回
++ LightGCN 图召回 + 内容召回 + 热门召回
+        ↓
+候选集融合 Top-300
+        ↓
+XGBoost 精排 Top-50
+        ↓
+MMR 多样性重排 Top-10
+        ↓
+推荐理由生成
+        ↓
+Redis 推荐缓存
+        ↓
+FastAPI 推荐接口
+        ↓
+Vue 前端展示
+        ↓
+用户点击 / 点赞 / 踩 / 不感兴趣
+        ↓
+反馈日志写入
+        ↓
+Spark Streaming / Flink 更新实时用户画像
+        ↓
+下一轮推荐与离线训练
 ```
-用户请求 (user_id, top_k=20)
-    │
-    ▼
-┌─────────────────┐
-│  1. Cache Check  │  ← 命中则直接返回 (Redis, TTL=30min)
-└────────┬────────┘
-         │ Miss
-         ▼
-┌─────────────────┐
-│  2. Recall       │  ← FAISS HNSW 检索 Top-200 候选
-│     ANN Search   │     冷启动用户回退到热门推荐
-└────────┬────────┘
-         │ 200 candidates
-         ▼
-┌─────────────────┐
-│  3. Filter       │  ← 过滤已评分电影
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  4. Feature      │  ← 构建 9 维特征向量
-│     Construction │     (用户特征 + 电影特征 + 交叉特征)
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  5. Rank         │  ← XGBoost 模型打分
-│     XGBoost      │
-└────────┬────────┘
-         │ Scored candidates
-         ▼
-┌─────────────────┐
-│  6. Sort &       │  ← 按预测分降序 → 返回 Top-20
-│     Return       │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  7. Write Cache  │  ← 写入 Redis (TTL + 15% jitter)
-└─────────────────┘
-```
+
+系统整体分为八层：
+
+1. 数据层
+   存储 MovieLens 原始数据、电影元数据、用户评分、用户反馈、推荐日志、模型指标和实验结果等。
+
+2. Spark 离线处理层
+   负责数据清洗、特征工程、用户画像、电影画像、训练测试集划分、ALS 训练、ItemCF 计算和排序特征导出。
+
+3. 图召回与多路召回层
+   负责从全量电影中快速召回候选电影，包括 Embedding 召回、ALS 协同过滤召回、ItemCF 召回、LightGCN 图召回、内容召回和热门召回。
+
+4. 排序层
+   使用 XGBoost 对召回候选集进行精排，后续可扩展 DeepFM / Wide&Deep 作为深度排序模型。
+
+5. 重排层
+   使用 MMR 控制推荐结果多样性，避免推荐列表过于单一。
+
+6. 在线服务层
+   使用 FastAPI 提供推荐接口、电影详情接口、用户反馈接口、评估指标接口和实验指标接口。
+
+7. 缓存与存储层
+   使用 Redis 缓存用户推荐结果和实时画像，使用 MySQL 或 SQLite 存储推荐日志、模型指标、实验结果和用户反馈。
+
+8. 前端展示层
+   使用 Vue 3 + Vite + TailwindCSS 实现电影推荐页面、用户画像页面、推荐评估页面、A/B 实验页面和系统监控页面。
 
 ---
 
-## 📚 技术栈
+## 四、系统使用技术与框架
 
-| 层级 | 技术 | 版本 | 用途 |
-|------|------|------|------|
-| **API 网关** | FastAPI + Uvicorn | 0.115 / 0.34 | 异步 RESTful API，自带 Swagger 文档 |
-| **特征工程** | Pandas + NumPy + SciPy | 2.2 / 2.2 / 1.15 | 数据清洗、特征构建、稀疏矩阵运算 |
-| **嵌入层** | ALS Matrix Factorization | — | 学习用户/物品的稠密向量表示 (64维) |
-| **召回层** | FAISS IndexHNSWFlat | 1.9.0 | HNSW 图结构的近似最近邻检索 |
-| **排序层** | XGBoost | 2.1.4 | 基于特征的 Learning-to-Rank 精排模型 |
-| **缓存层** | Redis | 7.0+ | Cache-Aside 模式，防穿透/击穿/雪崩 |
-| **前端** | Vue 3 + Vite + TailwindCSS | 3.x | 响应式单页应用 |
-| **部署** | Docker + Docker Compose | — | 三容器编排 (API + Frontend + Redis) |
-| **测试** | Pytest + httpx | 8.3 / 0.28 | 单元测试 + API 集成测试 |
+### 4.1 后端服务技术
+
+| 技术       | 用途               |
+| -------- | ---------------- |
+| Python   | 推荐系统核心开发语言       |
+| FastAPI  | 提供推荐接口、反馈接口、评估接口 |
+| Uvicorn  | FastAPI 服务运行容器   |
+| Pydantic | 请求参数和响应数据校验      |
+| Pytest   | 后端接口与推荐算法测试      |
 
 ---
 
-## 🧠 核心算法详解
+### 4.2 前端技术
 
-### 1. 矩阵分解 (Matrix Factorization)
-
-#### 数学原理
-
-采用 **ALS (Alternating Least Squares)** 算法，将稀疏的用户-物品评分矩阵 $R_{m \times n}$ 分解为两个低秩矩阵的乘积：
-
-$$R \approx U \times V^T$$
-
-其中 $U \in \mathbb{R}^{m \times k}$ 为用户隐向量矩阵，$V \in \mathbb{R}^{n \times k}$ 为物品隐向量矩阵，$k=64$ 为隐向量维度。
-
-**目标函数** (带 L2 正则化):
-
-$$\min_{U, V} \sum_{(i,j) \in \Omega} (R_{ij} - U_i V_j^T)^2 + \lambda(\|U\|^2 + \|V\|^2)$$
-
-#### ALS 迭代过程
-
-ALS 的核心思想是：固定一个矩阵，优化另一个矩阵，交替进行。每次迭代将非凸问题转化为凸优化问题：
-
-1. **固定 $V$，求解 $U$**：对每个用户 $u$，求解线性方程组 $(V_u^T V_u + \lambda I) U_u = V_u^T R_u$
-2. **固定 $U$，求解 $V$**：对每个物品 $i$，求解线性方程组 $(U_i^T U_i + \lambda I) V_i = U_i^T R_i$
-3. **交替更新偏置项**：用户偏置 $b_u$ 和物品偏置 $b_i$
-
-```python
-# 超参数配置
-n_factors = 64          # 隐向量维度
-regularization = 0.1    # L2 正则化系数
-iterations = 20         # ALS 迭代次数
-```
-
-#### 为什么选择 ALS？
-
-- ✅ **可并行化**：每个用户/物品的更新相互独立
-- ✅ **隐式反馈友好**：容易扩展到隐式反馈场景
-- ✅ **收敛稳定**：每次迭代目标函数单调递减
-- ✅ **冷启动处理**：新用户可用物品相似度退化
-
-
-### 2. FAISS HNSW 近似最近邻检索
-
-#### HNSW 图结构
-
-**HNSW (Hierarchical Navigable Small World)** 是一种基于图的 ANN 算法，其核心是构建多层导航图：
-
-```
-Layer 2:   ● ─────────── ●          ← 稀疏"高速公路"层，长距离跳跃
-           │              │
-Layer 1:   ● ─── ● ─── ● ─── ●      ← 中等密度，加速粗定位
-           │     │     │     │
-Layer 0:   ●─●─●─●─●─●─●─●─●─●     ← 稠密局部连接，精确搜索
-```
-
-**层级分配**：每个节点以概率 $P = \frac{1}{M_L}$ 逐层向上提升（指数衰减），$M_L = \frac{1}{\log(M)}$。因此：
-- 99% 的节点仅在 Layer 0
-- 少数节点出现在高层形成"高速公路"
-
-#### 搜索过程
-
-1. 从顶层入口点开始
-2. 在当前层贪婪搜索最近邻
-3. 下降到下一层，以上一层找到的点为起点
-4. 重复直到 Layer 0，执行精细搜索
-
-**时间复杂度**：$O(\log N)$，相比暴力搜索的 $O(N)$ 有数量级提升。
-
-#### 关键参数配置
-
-| 参数 | 默认值 | 作用 | 调优建议 |
-|------|--------|------|----------|
-| **M** | 32 | 每节点双向链接数 | 内存充足可增至 48~64 提高召回率 |
-| **efConstruction** | 200 | 构建阶段搜索宽度 | 越大索引质量越高，构建越慢 |
-| **efSearch** | 64 | 查询阶段搜索宽度 | 可运行时动态调整，越大越准越慢 |
-
-#### IndexHNSWFlat 的优势
-
-- **HNSW 图**：对数级搜索复杂度
-- **Flat 存储**：候选集精确距离计算，无压缩损失
-- **内积度量**：配合 L2 归一化向量 = 余弦相似度
-- **增量插入**：支持不重建索引添加新向量
-
-
-### 3. XGBoost 排序模型
-
-#### 特征设计
-
-模型使用 **9 维特征向量** 对每个 (用户, 候选电影) 对进行打分：
-
-| # | 特征名 | 类型 | 描述 |
-|---|--------|------|------|
-| 1 | `user_avg_rating` | 用户统计 | 用户历史评分的均值 |
-| 2 | `user_rating_count` | 用户统计 | 用户评分的总次数 |
-| 3 | `user_rating_std` | 用户统计 | 用户评分的标准差（偏好波动） |
-| 4 | `movie_avg_rating` | 物品统计 | 电影的平均评分 |
-| 5 | `movie_rating_count` | 物品统计 | 电影的总评价数（热度） |
-| 6 | `movie_popularity` | 物品统计 | **贝叶斯加权**流行度得分 |
-| 7 | `embedding_similarity` | 交叉特征 | 用户-电影向量余弦相似度 |
-| 8 | `genre_match_score` | 交叉特征 | 用户流派偏好 × 电影流派向量 |
-| 9 | `movie_year` | 物品属性 | 电影发行年份 |
-
-#### 贝叶斯流行度得分
-
-$$Popularity = \frac{v}{v + m} \cdot \bar{R} + \frac{m}{v + m} \cdot C$$
-
-其中 $v$ 为电影评分数，$\bar{R}$ 为电影平均分，$m$ 为 90% 分位线评分数，$C$ 为全局平均分。
-
-#### 模型配置
-
-```python
-XGBRegressor(
-    n_estimators=200,       # 树的数量
-    max_depth=6,            # 树的最大深度
-    learning_rate=0.05,     # 学习率
-    subsample=0.8,          # 样本采样率（防过拟合）
-    colsample_bytree=0.8,   # 特征采样率
-    reg_alpha=0.1,          # L1 正则化
-    reg_lambda=1.0,         # L2 正则化
-)
-```
-
-
-### 4. Redis 缓存策略
-
-#### Cache-Aside 模式
-
-```
-Read:
-  请求 → 查缓存 → Hit → 返回
-                → Miss → 从源加载 → 写缓存 → 返回
-
-Write:
-  请求 → 写数据源 → 失效/更新缓存
-```
-
-#### 三大缓存问题的防护
-
-| 问题 | 现象 | 解决方案 |
-|------|------|----------|
-| **缓存穿透** (Penetration) | 请求不存在的 key，每次都打到数据库 | 缓存空值标记 `__NULL__`，TTL=60s |
-| **缓存击穿** (Breakdown) | 热点 key 过期瞬间大量并发请求 | 分布式互斥锁 (SETNX) 控制刷新 |
-| **缓存雪崩** (Avalanche) | 大量 key 同时过期，服务压力骤增 | 所有 TTL 添加 ±15% 随机抖动 |
-
-#### TTL 分层设计
-
-| 数据类型 | 基础 TTL | 抖动范围 | 原因 |
-|----------|----------|----------|------|
-| 用户画像 | 3600s (1h) | 3060~4140s | 用户兴趣短期稳定 |
-| 推荐结果 | 1800s (30min) | 1530~2070s | 推荐结果需要定期刷新 |
-| 热门电影 | 600s (10min) | 510~690s | 热门榜变化较快 |
-| Top-K 候选 | 300s (5min) | 255~345s | 候选集变化频率高 |
-| 空值标记 | 60s | — | 防止穿透，短 TTL 减少误伤 |
+| 技术          | 用途               |
+| ----------- | ---------------- |
+| Vue 3       | 前端单页应用开发         |
+| Vite        | 前端构建工具           |
+| TailwindCSS | 页面样式与响应式布局       |
+| ECharts     | 用户画像、模型指标、监控图表展示 |
+| Axios       | 调用后端 API         |
 
 ---
 
-## 📂 项目结构
+### 4.3 推荐算法技术
 
+| 技术                 | 用途                     |
+| ------------------ | ---------------------- |
+| Spark DataFrame    | 大规模数据清洗和特征处理           |
+| Spark MLlib ALS    | 训练用户向量和电影向量            |
+| ItemCF             | 基于用户共同行为计算相似电影         |
+| FAISS HNSW         | 基于电影 Embedding 进行向量召回  |
+| LightGCN           | 基于用户-电影-类型等图结构学习高阶协同信号 |
+| XGBoost            | 对候选电影进行精排              |
+| MMR                | 推荐结果多样性重排              |
+| Popular 推荐         | 新用户和冷启动兜底              |
+| Content-Based 推荐   | 基于电影类型、标签、文本内容推荐       |
+| DeepFM / Wide&Deep | 后续可扩展的深度排序模型           |
+
+---
+
+### 4.4 实时反馈与在线学习技术
+
+| 技术                      | 用途                                      |
+| ----------------------- | --------------------------------------- |
+| Redis                   | 存储实时用户画像、推荐缓存                           |
+| Spark Streaming / Flink | 消费用户实时反馈，更新短期兴趣画像                       |
+| Feedback Log            | 记录点击、点赞、点踩、不感兴趣等反馈                      |
+| 定时离线任务                  | 周期性重训 ALS、LightGCN、XGBoost 和更新 FAISS 索引 |
+
+说明：
+系统不直接实时重训 ALS、LightGCN 或 XGBoost 主模型，而是采用“离线模型周期训练 + 在线反馈画像更新”的方式。用户实时行为先更新 Redis 中的短期兴趣画像，主模型通过每日或周期性离线任务更新。这样实现难度可控，也更符合课程项目落地要求。
+
+---
+
+### 4.5 存储与缓存技术
+
+| 技术              | 用途                        |
+| --------------- | ------------------------- |
+| Redis           | 推荐结果缓存、实时用户画像、A/B 实验分组    |
+| MySQL / SQLite  | 用户、电影、评分、推荐日志、模型指标、实验结果存储 |
+| CSV / Parquet   | Spark 离线中间数据存储            |
+| FAISS Index 文件  | 存储电影向量索引                  |
+| Joblib / Pickle | 保存 XGBoost、特征处理器等模型文件     |
+
+---
+
+### 4.6 监控与部署技术
+
+| 技术             | 用途                    |
+| -------------- | --------------------- |
+| Prometheus     | 采集推荐接口延迟、QPS、缓存命中率等指标 |
+| Grafana        | 展示监控面板                |
+| Docker         | 后端、前端、Redis、监控组件容器化   |
+| Docker Compose | 一键启动系统服务              |
+| FAISS GPU      | 作为大规模向量召回的后续扩展        |
+
+---
+
+## 五、数据处理与特征工程设计
+
+### 5.1 使用数据
+
+系统主要使用 MovieLens 数据集：
+
+```text
+ratings.csv：用户评分数据
+movies.csv：电影基本信息
+tags.csv：用户标签数据
+links.csv：电影与外部平台 ID 映射
 ```
-recommend/
-│
-├── app/                            # 🎯 应用核心
-│   ├── main.py                     # FastAPI 入口 + 生命周期管理
-│   ├── config.py                   # 集中配置 (pydantic-settings)
-│   └── logging_config.py           # 日志配置
-│
-├── api/                            # 🌐 API 层
-│   ├── routes.py                   # 路由处理器 (7 个端点)
-│   └── schemas.py                  # Pydantic 请求/响应模型
-│
-├── feature/                        # 🔧 特征工程
-│   ├── pipeline.py                 # 完整 ETL 管线 (加载→清洗→特征)
-│   └── user_profile.py             # 用户画像构建器
-│
-├── embedding/                      # 🧮 嵌入层
-│   ├── matrix_factorization.py     # ALS 矩阵分解实现
-│   └── embedding_service.py        # 嵌入训练 + 查询服务
-│
-├── recall/                         # 🔍 召回层
-│   ├── faiss_index.py              # FAISS HNSW 索引封装
-│   └── recall_service.py           # 召回编排 (嵌入 → ANN 搜索)
-│
-├── rank/                           # 📊 排序层
-│   ├── train.py                    # XGBoost 训练 + 数据构建器
-│   └── rank_model.py               # 排序服务 (特征构建 + 推理)
-│
-├── cache/                          # ⚡ 缓存层
-│   └── redis_cache.py              # Redis 封装 (Cache-Aside + 三防)
-│
-├── frontend/                       # 🖥️ Vue 3 前端
-│   ├── src/
-│   │   ├── api/index.js            # Axios API 客户端
-│   │   ├── components/             # NavBar / MovieCard /
-│   │   │                           #   UserProfile / PopularMovies
-│   │   ├── views/                  # Home / Recommend / Search /
-│   │   │                           #   MovieDetail
-│   │   └── router/index.js         # Vue Router 路由配置
-│   ├── nginx.conf                  # Nginx 生产部署配置
-│   ├── vite.config.js              # Vite 构建配置
-│   └── tailwind.config.js          # TailwindCSS 配置
-│
-├── scripts/                        # 🛠️ 工具脚本
-│   ├── download_data.py            # 下载 MovieLens 数据集
-│   ├── build_index.py              # 完整构建管线
-│   └── init_redis.py               # Redis 缓存预热
-│
-├── tests/                          # 🧪 测试
-│   ├── test_api.py                 # API 集成测试
-│   ├── test_recall.py              # FAISS 索引 + 嵌入测试
-│   └── test_cache.py               # 缓存逻辑测试
-│
-├── docker-compose.yml              # 🐳 三服务编排
-├── Dockerfile                      # 后端 API 镜像
-├── Dockerfile.frontend             # 前端 Nginx 镜像
-├── requirements.txt                # Python 依赖
-├── .env.example                    # 环境变量模板
-├── .gitignore                      # Git 忽略规则
-├── start.bat                       # Windows 启动脚本
-├── stop.bat                        # Windows 停止脚本
-└── README.md                       # 📖 本文档
+
+如果需要补充电影封面，可以通过 `links.csv` 中的 tmdbId 或 imdbId 关联 TMDB / IMDb 元数据，补充：
+
+```text
+poster_url
+overview
+release_date
+vote_average
+genres
+director
+actors
+```
+
+其中导演和演员信息可以用于 LightGCN 图召回中的多类型节点扩展。
+
+---
+
+### 5.2 Spark 数据处理任务
+
+系统新增 `spark_jobs/` 目录：
+
+```text
+spark_jobs/
+├── spark_preprocess.py
+├── spark_train_test_split.py
+├── spark_build_profile.py
+├── spark_als_train.py
+├── spark_itemcf_recall.py
+├── spark_lightgcn_graph_export.py
+├── spark_feature_export.py
+└── spark_export_faiss_vectors.py
 ```
 
 ---
 
-## 🚀 快速开始
+### 5.3 Spark 预处理内容
 
-### 本地开发环境
+`spark_preprocess.py` 负责：
 
-#### 前置要求
+1. 读取 ratings、movies、tags、links。
+2. 去除重复数据。
+3. 处理缺失值。
+4. 将 genres 拆分为多标签。
+5. 从电影标题中提取年份。
+6. 统计电影评分均值、评分次数和热度。
+7. 统计用户评分数量、平均评分和活跃度。
+8. 生成干净的中间数据。
 
-- **Python** 3.10+
-- **Redis** 7.0+
-- **Node.js** 18+ (前端开发)
-- **Git**
+输出：
 
-#### 1. 克隆仓库并安装依赖
-
-```bash
-git clone <your-repo-url>
-cd recommend
-
-# 创建虚拟环境
-python -m venv venv
-
-# Linux/Mac
-source venv/bin/activate
-
-# Windows
-venv\Scripts\activate
-
-# 安装 Python 依赖
-pip install -r requirements.txt
-```
-
-#### 2. 下载数据并训练模型
-
-```bash
-# 下载 MovieLens 数据集 (ml-latest-small)
-python scripts/download_data.py
-
-# 可选：补全 TMDB 海报、背景图、简介等展示信息
-# 1) 在 https://www.themoviedb.org/ 注册/登录账号
-# 2) 进入 Settings -> API 申请 API Key
-# 3) 将 Key 写入本地 .env：TMDB_API_KEY=你的_key
-python scripts/enrich_movie_metadata.py
-
-# 一键执行完整管线:
-#   数据下载 → 特征工程 → MF 训练 → FAISS 索引构建 → XGBoost 训练
-python scripts/build_index.py
-```
-
-`build_index.py` 自动完成以下步骤：
-
-| 步骤 | 内容 | 预估耗时 |
-|------|------|----------|
-| Step 1 | 下载 MovieLens 数据集 | ~10s (网络) |
-| Step 2 | 运行特征工程管线 | ~5s |
-| Step 3 | 训练 ALS 矩阵分解 (64维, 20轮) | ~30s |
-| Step 4 | 构建 FAISS HNSW 索引 | ~3s |
-| Step 5 | 训练 XGBoost 排序模型 | ~60s |
-| **总计** | | **约 2 分钟** |
-
-`enrich_movie_metadata.py` 会自动查找当前根目录或 `data/ml-latest-small` 中的 `movies.csv`、`links.csv`，并生成 `movie_metadata.csv`。如果没有设置 `TMDB_API_KEY`，脚本会生成只含基础字段的文件，系统仍可正常运行，只是没有封面图。
-
-#### 3. 启动 Redis
-
-```bash
-# 使用 Docker（推荐）
-docker run -d -p 6379:6379 --name redis redis:7-alpine
-
-# 或使用本地安装的 Redis
-redis-server
-```
-
-#### 4. 启动后端 API
-
-```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-```
-
-启动成功后可访问：
-- 🌐 **Swagger 文档**: http://localhost:8000/docs
-- 📖 **ReDoc 文档**: http://localhost:8000/redoc
-- ❤️ **健康检查**: http://localhost:8000/health
-
-#### 5. 启动前端 (开发模式)
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-前端开发服务器：http://localhost:3000
-
-补全 `movie_metadata.csv` 后，重新启动后端和前端即可看到海报：
-
-```bash
-# 后端
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-
-# 前端
-cd frontend
-npm run dev
+```text
+data/processed/ratings_clean.csv
+data/processed/movies_clean.csv
+data/processed/movie_tags.csv
 ```
 
 ---
 
-### Docker 一键部署
+### 5.4 训练测试集划分
 
-```bash
-# 克隆仓库
-git clone <your-repo-url>
-cd recommend
+`spark_train_test_split.py` 负责：
 
-# 启动所有服务 (Redis + API + Frontend)
-docker-compose up -d
+1. 按 userId 对评分时间排序。
+2. 每个用户最后一次评分作为测试集。
+3. 其他评分作为训练集。
+4. 保证每个有效用户至少有训练行为。
 
-# 查看服务状态
-docker-compose ps
+输出：
 
-# 查看日志
-docker-compose logs -f api
-```
-
-**三个容器服务：**
-
-| 服务 | 容器名 | 端口 | 说明 |
-|------|--------|------|------|
-| Redis | `rec-redis` | 6379 | 缓存层，maxmemory=256MB, LRU 淘汰 |
-| API | `rec-api` | 8000 | FastAPI 后端，首次启动自动训练模型 |
-| Frontend | `rec-frontend` | 3000 | Vue 3 SPA，Nginx 静态服务 |
-
-> ⚠️ **注意**：首次启动 `api` 容器会自动下载数据并训练模型，约需 2~3 分钟。通过 `docker-compose logs -f api` 查看进度。
-
-Docker 方式同样支持 TMDB Key。推荐在 `.env` 中配置：
-
-```env
-TMDB_API_KEY=your_tmdb_api_key_here
-```
-
-如果需要在 Docker 数据目录内生成海报元数据，可先运行：
-
-```bash
-python scripts/download_data.py
-python scripts/enrich_movie_metadata.py
-docker-compose restart api frontend
+```text
+data/processed/train_ratings.csv
+data/processed/test_ratings.csv
 ```
 
 ---
 
-## 📡 API 文档
+### 5.5 用户画像构建
 
-### 接口总览
+`spark_build_profile.py` 生成用户画像：
 
-| 方法 | 端点 | 说明 |
-|------|------|------|
-| `GET` | `/health` | 健康检查 |
-| `GET` | `/recommend/{user_id}` | 个性化推荐 |
-| `GET` | `/popular` | 热门电影列表 |
-| `GET` | `/movie/{movie_id}` | 电影详情 |
-| `GET` | `/user/{user_id}/profile` | 用户画像 |
-| `GET` | `/search` | 电影搜索 |
-| `POST` | `/rebuild-index` | 重建索引 |
+```text
+user_rating_count
+user_avg_rating
+user_rating_std
+favorite_genres
+favorite_decades
+high_rating_movies
+recent_rating_movies
+active_level
+```
 
----
+示例：
 
-### GET /health
-
-健康检查接口，返回各组件运行状态。
-
-**Response:**
 ```json
 {
-  "status": "ok",
-  "version": "1.0.0",
-  "redis": true,
-  "faiss_index_size": 9724
+  "user_id": 1001,
+  "favorite_genres": ["Sci-Fi", "Action", "Adventure"],
+  "favorite_decades": ["1990s", "2000s"],
+  "avg_rating": 4.2,
+  "active_level": "high"
 }
 ```
 
 ---
 
-### GET /recommend/{user_id}
+### 5.6 电影画像构建
 
-获取个性化电影推荐。
+电影画像包括：
 
-**Parameters:**
-| 参数 | 类型 | 默认 | 说明 |
-|------|------|------|------|
-| `user_id` | path:int | 必填 | 用户 ID (1~610) |
-| `top_k` | query:int | 20 | 推荐数量 (1~100) |
-| `use_cache` | query:bool | true | 是否使用 Redis 缓存 |
-
-**Example:**
-```bash
-curl "http://localhost:8000/recommend/1?top_k=10"
+```text
+movie_avg_rating
+movie_rating_count
+movie_popularity
+genres
+year
+tag_text
+poster_url
+overview
+director
+actors
 ```
 
-**Response:**
+电影画像主要用于：
+
+1. 内容推荐。
+2. XGBoost 排序特征。
+3. 推荐理由生成。
+4. 用户画像匹配。
+5. LightGCN 图结构构建。
+6. 前端电影详情展示。
+
+---
+
+## 六、推荐算法流程设计
+
+系统采用完整的“召回 → 融合 → 排序 → 重排 → 解释 → 评估”流程。
+
+---
+
+## 6.1 多路召回层
+
+召回层目标是从全量电影中快速筛选出 Top-300 候选电影。
+
+### 6.1.1 Embedding 召回
+
+基于 Spark ALS 生成的电影向量构建 FAISS HNSW 索引。
+
+流程：
+
+```text
+Spark ALS 训练用户向量和电影向量
+        ↓
+导出 movie_factors.csv
+        ↓
+转换为 movie_vectors.npy
+        ↓
+FAISS 构建 HNSW 索引
+        ↓
+根据用户向量检索相似电影 Top-200
+```
+
+输出字段：
+
+```text
+user_id
+movie_id
+recall_type = embedding
+recall_score
+```
+
+---
+
+### 6.1.2 协同过滤召回
+
+使用 Spark MLlib ALS 训练协同过滤模型。
+
+输入：
+
+```text
+train_ratings.csv
+```
+
+输出：
+
+```text
+data/recall/als_recall.csv
+```
+
+推荐参数：
+
+```text
+rank = 64
+maxIter = 15
+regParam = 0.1
+coldStartStrategy = drop
+```
+
+作用：
+
+```text
+根据用户历史评分，推荐相似用户喜欢的电影。
+```
+
+---
+
+### 6.1.3 ItemCF 召回
+
+基于用户共同评分行为计算电影之间的相似度。
+
+公式：
+
+```text
+sim(i, j) = common_users(i, j) / sqrt(user_count(i) * user_count(j))
+```
+
+作用：
+
+```text
+喜欢这部电影的用户，还可能喜欢哪些电影。
+```
+
+输出：
+
+```text
+data/recall/itemcf_recall.csv
+```
+
+---
+
+### 6.1.4 LightGCN 图召回
+
+LightGCN 用于学习用户与电影之间更高阶的协同关系，弥补 ALS 主要建模一阶用户-物品交互的不足。
+
+#### 图结构设计
+
+系统构建异构推荐图，包含五类节点：
+
+```text
+用户节点 User
+电影节点 Movie
+导演节点 Director
+演员节点 Actor
+类型节点 Genre
+```
+
+图中的边包括：
+
+```text
+用户 - 电影：评分、点击、点赞、收藏等行为
+电影 - 类型：电影所属类型
+电影 - 导演：电影导演
+电影 - 演员：电影主演
+```
+
+如果数据集中暂时缺少导演和演员信息，第一阶段可以先构建：
+
+```text
+用户 - 电影 - 类型
+```
+
+后续通过 TMDB / IMDb 元数据补充导演和演员节点。
+
+#### LightGCN 输出
+
+LightGCN 训练后输出：
+
+```text
+user_gcn_embedding
+movie_gcn_embedding
+```
+
+召回方式：
+
+```text
+计算用户向量与电影向量相似度
+召回 Top-100 图召回候选电影
+```
+
+输出字段：
+
+```text
+user_id
+movie_id
+recall_type = lightgcn
+recall_score
+```
+
+#### 与 ALS / FAISS 的融合方式
+
+LightGCN 结果可以通过两种方式接入多路召回：
+
+1. 作为独立召回通道，输出 `lightgcn_recall.csv`。
+2. 将 LightGCN 向量与 ALS 向量拼接或加权融合，再交给 FAISS 构建向量索引。
+
+融合示例：
+
+```text
+final_embedding = 0.6 × als_embedding + 0.4 × lightgcn_embedding
+```
+
+或者：
+
+```text
+final_embedding = concat(als_embedding, lightgcn_embedding)
+```
+
+#### 技术亮点
+
+LightGCN 可以学习用户-电影图中的高阶协同信号，例如“用户喜欢的电影所关联的类型、演员和导演，再影响其他相似电影的推荐”。在评分数据稀疏场景下，图召回可以增强召回覆盖能力，是系统的研究型技术亮点。
+
+---
+
+### 6.1.5 内容召回
+
+基于电影类型、标签和标题文本进行相似推荐。
+
+使用字段：
+
+```text
+title
+genres
+tags
+year
+overview
+director
+actors
+```
+
+方法：
+
+```text
+TF-IDF + cosine similarity
+```
+
+适用场景：
+
+1. 新电影冷启动。
+2. 用户喜欢某一类电影。
+3. 根据电影详情页推荐相似电影。
+4. 辅助推荐理由生成。
+
+---
+
+### 6.1.6 热门召回
+
+用于新用户冷启动和召回兜底。
+
+热门分数：
+
+```text
+hot_score = movie_avg_rating × log(movie_rating_count + 1)
+```
+
+适用场景：
+
+1. 新用户没有评分记录。
+2. 个性化召回结果不足。
+3. Redis 或模型结果为空时兜底。
+
+---
+
+## 6.2 候选集融合
+
+多路召回结果合并后，需要统一去重和特征补充。
+
+融合后字段：
+
+```text
+user_id
+movie_id
+is_embedding_recall
+is_als_recall
+is_itemcf_recall
+is_lightgcn_recall
+is_content_recall
+is_hot_recall
+embedding_score
+als_score
+itemcf_score
+lightgcn_score
+content_score
+hot_score
+recall_source_count
+```
+
+每个用户最多保留 Top-300 候选。
+
+候选融合策略：
+
+```text
+1. 合并各召回通道结果
+2. 按 user_id + movie_id 去重
+3. 保留每一路召回分数
+4. 统计 recall_source_count
+5. 过滤用户已评分或已明确不感兴趣电影
+6. 输出 Top-300 候选集
+```
+
+---
+
+## 6.3 XGBoost 精排
+
+XGBoost 对候选电影进行精排，输出 Top-50。
+
+### 排序特征
+
+用户侧特征：
+
+```text
+user_avg_rating
+user_rating_count
+user_rating_std
+favorite_genres
+favorite_decades
+active_level
+```
+
+电影侧特征：
+
+```text
+movie_avg_rating
+movie_rating_count
+movie_popularity
+movie_year
+genre_count
+```
+
+交叉特征：
+
+```text
+genre_match_score
+embedding_similarity
+year_preference_match
+user_movie_score_gap
+director_match_score
+actor_match_score
+```
+
+召回特征：
+
+```text
+embedding_score
+als_score
+itemcf_score
+lightgcn_score
+content_score
+hot_score
+recall_source_count
+```
+
+输出：
+
+```text
+user_id
+movie_id
+rank_score
+```
+
+---
+
+## 6.4 DeepFM / Wide&Deep 扩展
+
+主线排序模型仍然使用 XGBoost，因为 XGBoost 训练速度快、可解释性强，适合课程项目落地。
+
+同时系统预留 DeepFM / Wide&Deep 扩展接口。
+
+DeepFM / Wide&Deep 可以使用：
+
+```text
+user_id embedding
+movie_id embedding
+genres multi-hot
+als_score
+faiss_score
+lightgcn_score
+movie_avg_rating
+user_avg_rating
+genre_match_score
+```
+
+用于预测用户点击、点赞或高评分概率。
+
+扩展策略：
+
+```text
+当前版本：XGBoost 作为主排序模型
+扩展版本：DeepFM / Wide&Deep 作为深度排序模型对比实验
+```
+
+---
+
+## 6.5 MMR 多样性重排
+
+XGBoost 排序后，如果直接返回 Top-10，可能出现推荐结果过于集中，比如全部是动作片或科幻片。
+
+因此使用 MMR 进行重排。
+
+公式：
+
+```text
+MMR(i) = λ × relevance(i) - (1 - λ) × max_similarity(i, selected)
+```
+
+参数：
+
+```text
+λ = 0.7
+```
+
+其中：
+
+```text
+relevance(i)：XGBoost 排序分数
+similarity(i, selected)：候选电影与已选电影之间的相似度
+```
+
+相似度基于：
+
+```text
+genres + tags + embedding cosine similarity
+```
+
+作用：
+
+1. 保证推荐结果相关性。
+2. 提升推荐结果多样性。
+3. 避免推荐列表类型过于单一。
+4. 提升用户体验。
+
+最终输出 Top-10 推荐电影。
+
+---
+
+## 七、推荐理由设计
+
+系统为每部推荐电影生成推荐理由，提升可解释性和用户体验。
+
+### 7.1 模板式推荐理由
+
+第一阶段采用模板式规则生成推荐理由，稳定、可控、容易落地。
+
+推荐理由规则：
+
+| 来源          | 推荐理由                         |
+| ----------- | ---------------------------- |
+| 类型匹配        | 因为你经常喜欢 Action / Sci-Fi 类型电影 |
+| ALS 召回      | 与你兴趣相似的用户也喜欢这部电影             |
+| FAISS 召回    | 该电影与你喜欢的电影在向量空间中相似           |
+| ItemCF 召回   | 喜欢你高分电影的用户也常看这部电影            |
+| LightGCN 召回 | 该电影在用户-电影-类型图中与你的兴趣路径相近      |
+| 内容召回        | 该电影与你喜欢的电影在类型、标签或剧情简介上相似     |
+| 热门召回        | 该电影评分较高且观看人数较多               |
+| MMR 重排      | 该电影可以丰富你的推荐列表，避免类型过于单一       |
+| 实时反馈        | 根据你最近点赞的电影，系统提高了相关类型权重       |
+
+示例：
+
+```text
+推荐理由：你最近高分评价了多部科幻和动作电影，该电影在类型和向量表示上与你的兴趣相似，并且在相似用户群体中评分较高。
+```
+
+另一个示例：
+
+```text
+推荐理由：因为你喜欢《Inception》这类科幻悬疑电影，系统推荐同样具有烧脑剧情和高评分表现的《Interstellar》。
+```
+
+---
+
+### 7.2 基于电影关系的推荐理由
+
+如果补充导演、演员和电影详情数据，可以生成更具体的理由：
+
+```text
+因为你喜欢诺兰导演的《Inception》，推荐同导演的《Interstellar》。
+```
+
+```text
+因为你多次高分评价主演相同的动作电影，系统推荐这部同演员作品。
+```
+
+这种方式能提升推荐理由的可信度和可解释性。
+
+---
+
+### 7.3 LLM 推荐理由扩展
+
+进阶版本可以接入本地小模型生成自然语言推荐理由。
+
+输入信息包括：
+
+```text
+用户偏好类型
+用户高分电影
+候选电影类型
+候选电影导演 / 演员
+召回来源
+排序特征
+```
+
+输出为自然语言解释。
+
+示例输入：
+
+```text
+用户喜欢 Sci-Fi、Action；
+用户高分电影包括 Inception、The Matrix；
+候选电影为 Interstellar；
+召回来源为 LightGCN + Content-Based；
+候选电影类型为 Sci-Fi、Drama。
+```
+
+输出示例：
+
+```text
+你喜欢带有科幻设定和复杂剧情结构的电影，而《Interstellar》在题材、导演风格和叙事方式上都与你喜欢的电影相似，因此推荐给你。
+```
+
+说明：
+LLM 生成推荐理由作为扩展功能，主线仍然采用模板式推荐理由，避免本地模型效果不稳定影响项目演示。
+
+---
+
+## 八、用户反馈闭环设计
+
+系统支持用户对推荐结果进行反馈。
+
+前端按钮包括：
+
+```text
+喜欢
+不喜欢
+不感兴趣
+已看过
+收藏
+```
+
+反馈接口：
+
+```http
+POST /api/feedback
+```
+
+请求示例：
+
 ```json
 {
-  "user_id": 1,
-  "recommendations": [
-    {
-      "movie_id": 318,
-      "title": "Shawshank Redemption, The (1994)",
-      "score": 0.9821,
-      "genres": "Crime|Drama",
-      "poster_url": "https://image.tmdb.org/t/p/w500/...",
-      "backdrop_url": "https://image.tmdb.org/t/p/w780/...",
-      "overview": "电影简介...",
-      "release_date": "1994-09-23",
-      "runtime": 142,
-      "vote_average": 8.7,
-      "popularity": 120.4
-    },
-    {
-      "movie_id": 858,
-      "title": "Godfather, The (1972)",
-      "score": 0.9673
-    }
-  ],
-  "cached": false,
-  "took_ms": 12.5
+  "user_id": 1001,
+  "movie_id": 260,
+  "feedback_type": "like",
+  "source": "recommendation",
+  "rank_position": 3
 }
 ```
 
----
+反馈数据写入：
 
-### GET /popular
-
-获取热门电影排行榜 (按贝叶斯流行度得分排序)。
-
-```bash
-curl "http://localhost:8000/popular?limit=20"
+```text
+feedback_logs
+recommendation_logs
 ```
 
 ---
 
-### GET /movie/{movie_id}
+### 8.1 短期反馈
 
-获取电影详细信息。
+实时更新 Redis 中的用户短期画像：
 
-```bash
-curl "http://localhost:8000/movie/1"
+```text
+user:realtime_profile:{user_id}
 ```
 
-**Response:**
+示例：
+
 ```json
 {
-  "movie_id": 1,
-  "title": "Toy Story (1995)",
-  "genres": "Adventure|Animation|Children|Comedy|Fantasy",
-  "avg_rating": 3.92,
-  "rating_count": 215,
-  "popularity_score": 3.84,
-  "year": 1995.0,
-  "poster_url": "https://image.tmdb.org/t/p/w500/...",
-  "backdrop_url": "https://image.tmdb.org/t/p/w780/...",
-  "overview": "电影简介...",
-  "release_date": "1995-10-30",
-  "runtime": 81,
-  "vote_average": 8.0,
-  "popularity": 98.2
+  "like_genres": {
+    "Sci-Fi": 3,
+    "Action": 2
+  },
+  "dislike_genres": {
+    "Horror": 2
+  },
+  "recent_clicked_movies": [1, 50, 260]
 }
 ```
 
+推荐时，系统读取实时画像，对重排结果进行轻量调整。
+
 ---
 
-### GET /user/{user_id}/profile
+### 8.2 长期反馈
 
-获取用户画像：评分统计、流派偏好、历史记录。
+离线训练时将反馈行为加入训练数据：
 
-```bash
-curl "http://localhost:8000/user/1/profile"
+```text
+like / favorite：强正样本
+click / watched：弱正样本
+dislike / not_interested：负样本
+```
+
+形成闭环：
+
+```text
+推荐曝光 → 用户反馈 → 日志记录 → 实时画像 → 离线训练 → 新推荐结果
 ```
 
 ---
 
-### GET /search
+## 九、在线学习设计
 
-按标题搜索电影 (子串匹配)。
+系统采用轻量在线学习策略。
 
-**Parameters:**
-| 参数 | 类型 | 默认 | 说明 |
-|------|------|------|------|
-| `q` | query:string | 必填 | 搜索关键词 |
-| `limit` | query:int | 20 | 返回数量上限 |
+不直接实时重训 ALS、LightGCN 或 XGBoost，而是采用：
 
-```bash
-curl "http://localhost:8000/search?q=Toy+Story&limit=10"
+```text
+离线模型周期训练 + 实时反馈画像更新
+```
+
+流程：
+
+```text
+用户实时反馈
+        ↓
+写入 Kafka / 本地消息队列 / 日志表
+        ↓
+Flink 或 Spark Streaming 消费反馈
+        ↓
+更新 Redis 用户短期画像
+        ↓
+推荐重排阶段使用短期画像调整权重
+```
+
+这样实现了实时反馈，又避免实时重训模型带来的复杂性。
+
+---
+
+## 十、A/B 实验框架设计
+
+系统支持简单 A/B 实验，用于对比不同推荐策略在线效果。
+
+实验分组方式：
+
+```text
+user_id % 2 == 0 → A 组
+user_id % 2 == 1 → B 组
+```
+
+实验示例：
+
+```text
+A 组：ALS + FAISS + XGBoost
+B 组：ALS + FAISS + LightGCN + XGBoost + MMR
+```
+
+实验日志表：
+
+```text
+experiment_logs
+```
+
+字段：
+
+```text
+user_id
+experiment_name
+group_name
+model_version
+movie_id
+rank_position
+is_clicked
+is_liked
+is_disliked
+created_at
+```
+
+评估指标：
+
+```text
+CTR
+Like Rate
+Dislike Rate
+Average Recommendation Latency
+Precision@10
+Recall@10
+NDCG@10
+Diversity
+```
+
+前端提供 A/B 实验页面，展示不同实验组的效果对比。
+
+---
+
+## 十一、监控告警设计
+
+系统接入 Prometheus + Grafana，对推荐服务进行监控。
+
+监控指标包括：
+
+```text
+推荐接口 QPS
+推荐接口平均延迟
+P95 延迟
+P99 延迟
+Redis 缓存命中率
+FAISS 召回耗时
+XGBoost 排序耗时
+MMR 重排耗时
+推荐点击率
+推荐点赞率
+推荐点踩率
+推荐为空次数
+服务错误率
+```
+
+FastAPI 暴露监控接口：
+
+```http
+GET /metrics
+```
+
+Grafana 面板包括：
+
+1. 推荐服务请求量。
+2. 推荐接口平均耗时。
+3. Redis 缓存命中率。
+4. 召回 / 排序 / 重排耗时占比。
+5. 推荐点击率趋势。
+6. 推荐点赞率趋势。
+7. 模型版本效果对比。
+
+告警规则示例：
+
+```text
+推荐接口 P95 延迟 > 500ms
+Redis 命中率 < 60%
+推荐为空次数连续升高
+接口错误率 > 5%
 ```
 
 ---
 
-### POST /rebuild-index
+## 十二、推荐效果评估设计
 
-重建 FAISS 索引并重新训练嵌入模型。此操作会清除相关缓存。
+推荐效果评估是系统证明算法有效性的核心模块。系统需要实现完整的离线评估 pipeline，并通过消融实验验证每一步改进是否有效。
 
-```bash
-curl -X POST "http://localhost:8000/rebuild-index"
+---
+
+### 12.1 数据切分策略
+
+采用时间顺序切分，保证评估更接近真实推荐场景。
+
+切分方式：
+
+```text
+按用户评分时间排序
+前 80% 作为训练集
+后 20% 作为测试集
+```
+
+或者在用户交互较少时采用留一法：
+
+```text
+每个用户最后一次评分作为测试集
+其余评分作为训练集
+```
+
+测试集只用于最终评估，不参与模型训练。
+
+---
+
+### 12.2 核心评估指标
+
+离线评估指标包括：
+
+```text
+Precision@K
+Recall@K
+NDCG@K
+HitRate@K
+Coverage
+Diversity
+Novelty
+```
+
+其中核心展示指标为：
+
+```text
+Precision@10
+Recall@10
+NDCG@10
+HitRate@10
+Coverage
+Diversity
+```
+
+指标说明：
+
+| 指标          | 说明                  |
+| ----------- | ------------------- |
+| Precision@K | 推荐列表中用户真正喜欢电影的比例    |
+| Recall@K    | 用户喜欢电影中被推荐命中的比例     |
+| NDCG@K      | 考虑排名位置的排序质量         |
+| HitRate@K   | Top-K 中是否至少命中一个相关电影 |
+| Coverage    | 推荐系统覆盖的电影比例         |
+| Diversity   | 推荐列表内部多样性           |
+| Novelty     | 推荐结果的新颖性，避免只推热门电影   |
+
+---
+
+### 12.3 模型对比实验
+
+系统对比以下模型：
+
+```text
+Popular 热门推荐
+Embedding 召回 + 简单排序
+ALS 协同过滤
+ItemCF 召回
+LightGCN 图召回
+多路召回融合
+多路召回 + XGBoost 精排
+多路召回 + XGBoost 精排 + MMR 重排
+```
+
+评估结果存入：
+
+```text
+model_metrics
+```
+
+前端评估页面展示：
+
+| 模型                   | Precision@10 | Recall@10 | NDCG@10 | HitRate@10 | Coverage | Diversity |
+| -------------------- | -----------: | --------: | ------: | ---------: | -------: | --------: |
+| Popular              |         代码计算 |      代码计算 |    代码计算 |       代码计算 |     代码计算 |      代码计算 |
+| Embedding + 简单排序     |         代码计算 |      代码计算 |    代码计算 |       代码计算 |     代码计算 |      代码计算 |
+| ALS                  |         代码计算 |      代码计算 |    代码计算 |       代码计算 |     代码计算 |      代码计算 |
+| ItemCF               |         代码计算 |      代码计算 |    代码计算 |       代码计算 |     代码计算 |      代码计算 |
+| LightGCN             |         代码计算 |      代码计算 |    代码计算 |       代码计算 |     代码计算 |      代码计算 |
+| 多路召回                 |         代码计算 |      代码计算 |    代码计算 |       代码计算 |     代码计算 |      代码计算 |
+| 多路召回 + XGBoost       |         代码计算 |      代码计算 |    代码计算 |       代码计算 |     代码计算 |      代码计算 |
+| 多路召回 + XGBoost + MMR |         代码计算 |      代码计算 |    代码计算 |       代码计算 |     代码计算 |      代码计算 |
+
+---
+
+### 12.4 消融实验设计
+
+为了证明每一步改进都有效，系统设计消融实验。
+
+消融实验包括：
+
+```text
+完整模型
+去掉 LightGCN
+去掉 ItemCF
+去掉内容召回
+去掉 XGBoost
+去掉 MMR
+只保留 Embedding 召回 + 简单排序
+```
+
+实验目的：
+
+1. 验证多路召回是否提升 Recall@K。
+2. 验证 XGBoost 是否提升 Precision@K 和 NDCG@K。
+3. 验证 MMR 是否提升 Diversity。
+4. 验证 LightGCN 是否在稀疏用户场景下提升召回能力。
+5. 验证推荐系统每个模块对最终效果的贡献。
+
+示例结论写法：
+
+```text
+实验结果表明，相比只使用 Embedding 召回的 baseline，多路召回提升了 Recall@10；
+加入 XGBoost 后，Precision@10 和 NDCG@10 得到提升；
+加入 MMR 后，推荐列表 Diversity 提升，说明重排策略能够缓解推荐结果同质化问题；
+加入 LightGCN 后，稀疏用户上的 Recall@10 有提升，说明图召回能够补充高阶协同信号。
 ```
 
 ---
 
-## 🖥️ 前端界面
+### 12.5 特征重要性分析
 
-前端是基于 **Vue 3 Composition API** + **Vite** + **TailwindCSS** 构建的响应式单页应用。
+XGBoost 可以输出特征重要性，用于解释排序模型。
 
-### 页面路由
+展示特征包括：
 
-| 路由 | 组件 | 说明 |
-|------|------|------|
-| `/` | `Home.vue` | 首页：系统介绍 + 快捷入口 |
-| `/recommend` | `Recommend.vue` | 个性化推荐：输入用户 ID 获取推荐 |
-| `/search` | `Search.vue` | 电影搜索：关键词搜索 |
-| `/movie/:id` | `MovieDetail.vue` | 电影详情页 |
-| `/user/:id` | `UserProfile.vue` | 用户画像页 |
-
-### 核心组件
-
-| 组件 | 功能 |
-|------|------|
-| `NavBar.vue` | 顶部导航栏，路由切换 |
-| `MovieCard.vue` | 电影卡片：海报/占位卡片 + 类型 + 评分 + 上映日期 + 简介悬停层 |
-| `PopularMovies.vue` | 热门电影横向滚动列表 |
-| `UserProfile.vue` | 用户画像：活跃度 + 流派偏好雷达 |
-
-### 构建与部署
-
-```bash
-cd frontend
-
-# 开发模式
-npm run dev
-
-# 生产构建
-npm run build
-
-# 预览构建产物
-npm run preview
+```text
+als_score
+embedding_score
+itemcf_score
+lightgcn_score
+movie_avg_rating
+movie_popularity
+genre_match_score
+recall_source_count
+user_avg_rating
 ```
 
-生产环境下由 Nginx 提供静态文件服务（见 `Dockerfile.frontend` 和 `nginx.conf`）。
+该模块用于说明：
 
----
-
-## ⚡ 性能优化
-
-| # | 优化策略 | 技术细节 | 效果 |
-|---|----------|----------|------|
-| 1 | **ANN 检索** | FAISS HNSW 实现 O(log N) 搜索 | 比暴力搜索快 100~1000x |
-| 2 | **向量归一化** | L2 归一化后内积 = 余弦相似度 | 无需额外计算余弦 |
-| 3 | **批量召回** | `search_batch()` 一次调用处理多用户 | 吞吐量提升 5~10x |
-| 4 | **Cache-Aside** | Redis 缓存热点推荐结果 | 命中时延迟 < 1ms |
-| 5 | **异步框架** | FastAPI + Uvicorn async | 非阻塞处理并发请求 |
-| 6 | **召回-排序解耦** | 召回 200 候选 + 排序 Top-20 | 平衡精度与延迟 |
-| 7 | **稀疏矩阵运算** | CSR/CSC 格式 ALS 高效求解 | 内存占用降低 80% |
-| 8 | **TTL 抖动** | Redis ±15% 随机过期时间 | 防止缓存雪崩 |
-| 9 | **模型预加载** | 启动时加载所有模型到内存 | 避免首次请求冷启动 |
-| 10 | **特征缓存** | FeaturePipeline 序列化到磁盘 | 跳过重复的特征工程 |
-
-### 延迟基准 (单次推荐请求)
-
-| 场景 | 典型延迟 | 说明 |
-|------|----------|------|
-| 🟢 缓存命中 | < 1ms | Redis 直接返回 |
-| 🟡 缓存未命中 (正常) | 10~20ms | FAISS 召回 + XGBoost 排序 |
-| 🔴 冷启动 (无嵌入) | 5~15ms | 回退到热门推荐 |
-| 🔵 首次启动 | ~2min | 数据加载 + 模型训练 |
-
----
-
-## 🧪 测试
-
-```bash
-# 运行所有测试
-pytest tests/ -v
-
-# 运行特定测试文件
-pytest tests/test_api.py -v
-pytest tests/test_recall.py -v
-pytest tests/test_cache.py -v
-
-# 生成覆盖率报告
-pytest tests/ -v --cov=. --cov-report=term-missing --cov-report=html
+```text
+排序模型主要依赖哪些特征
+哪些召回分数对结果影响最大
+用户画像和电影画像是否有效
 ```
 
-### 测试覆盖
-
-| 测试文件 | 测试内容 |
-|----------|----------|
-| `test_api.py` | API 端点：health / recommend / popular / search / movie |
-| `test_recall.py` | FAISS 索引构建、搜索准确性、嵌入质量 |
-| `test_cache.py` | Redis get/set、TTL 抖动、空值标记、pattern 删除 |
+这是推荐系统最有力的技术证明之一。
 
 ---
 
-## 📊 数据集
+## 十三、数据库设计
 
-本项目使用 **MovieLens Latest Small** 数据集：
+系统建议使用 MySQL 或 SQLite 进行业务数据和评估结果存储。
 
-| 文件 | 记录数 | 字段 |
-|------|--------|------|
-| `ratings.csv` | 100,836 | userId, movieId, rating, timestamp |
-| `movies.csv` | 9,724 | movieId, title, genres |
-| `tags.csv` | 3,683 | userId, movieId, tag, timestamp |
-| `links.csv` | 9,724 | movieId, imdbId, tmdbId |
+核心表包括：
 
-- **用户数**: 610
-- **电影数**: 9,724
-- **评分范围**: 0.5 ~ 5.0 (步长 0.5)
-- **稀疏度**: ~1.7% (100,836 / 610×9,724)
+### 13.1 users 用户表
 
-> 📥 数据集来源：[GroupLens Research](https://grouplens.org/datasets/movielens/)
+```text
+user_id
+username
+created_at
+```
+
+### 13.2 movies 电影表
+
+```text
+movie_id
+title
+genres
+year
+poster_url
+overview
+tmdb_id
+imdb_id
+director
+actors
+```
+
+### 13.3 ratings 评分表
+
+```text
+user_id
+movie_id
+rating
+timestamp
+```
+
+### 13.4 user_profiles 用户画像表
+
+```text
+user_id
+favorite_genres
+favorite_decades
+avg_rating
+rating_count
+active_level
+profile_json
+updated_at
+```
+
+### 13.5 movie_profiles 电影画像表
+
+```text
+movie_id
+avg_rating
+rating_count
+popularity
+genres
+tag_text
+profile_json
+updated_at
+```
+
+### 13.6 recommendations 推荐结果表
+
+```text
+id
+user_id
+movie_id
+rank_position
+recommend_score
+recommend_type
+reason
+model_version
+created_at
+```
+
+### 13.7 recommendation_logs 推荐日志表
+
+```text
+id
+user_id
+movie_id
+rank_position
+is_exposed
+is_clicked
+is_liked
+is_disliked
+is_not_interested
+created_at
+```
+
+### 13.8 feedback_logs 用户反馈表
+
+```text
+id
+user_id
+movie_id
+feedback_type
+source
+rank_position
+created_at
+```
+
+### 13.9 model_metrics 模型指标表
+
+```text
+id
+model_name
+model_version
+precision_at_10
+recall_at_10
+ndcg_at_10
+hit_rate_at_10
+coverage
+diversity
+novelty
+evaluate_time
+```
+
+### 13.10 experiment_logs A/B 实验日志表
+
+```text
+id
+experiment_name
+group_name
+user_id
+movie_id
+model_version
+rank_position
+is_clicked
+is_liked
+is_disliked
+created_at
+```
+
+### 13.11 ablation_metrics 消融实验结果表
+
+```text
+id
+experiment_name
+model_variant
+removed_module
+precision_at_10
+recall_at_10
+ndcg_at_10
+hit_rate_at_10
+coverage
+diversity
+evaluate_time
+```
 
 ---
 
-## ❓ 常见问题
+## 十四、Redis 缓存设计
 
-<details>
-<summary><b>Q: 首次启动很慢怎么办？</b></summary>
+Redis 主要用于推荐缓存和实时画像。
 
-首次启动需要下载数据集 (~1MB) 并训练模型 (~2分钟)。后续启动会加载缓存的模型文件，速度很快。如果不需要重新训练，确保 `models/` 目录下的文件未被删除。
-</details>
+### 14.1 推荐结果缓存
 
-<details>
-<summary><b>Q: Redis 连接失败怎么办？</b></summary>
+```text
+recommend:{user_id}
+```
 
-系统设计为 **Redis 可选**——如果 Redis 不可用，系统会自动降级为无缓存模式运行，不影响核心推荐功能。只需确保 Redis 服务已启动，或通过环境变量配置正确的连接地址。
-</details>
+缓存内容：
 
-<details>
-<summary><b>Q: 如何添加新电影？</b></summary>
+```json
+[
+  {
+    "movie_id": 260,
+    "title": "Star Wars",
+    "score": 0.96,
+    "reason": "因为你喜欢科幻和冒险类型电影"
+  }
+]
+```
 
-可以使用 `faiss_index.add()` 方法增量添加新的电影嵌入向量，无需完全重建索引。但建议周期性调用 `/rebuild-index` 接口进行全量重建以保证图质量。
-</details>
+TTL：
 
-<details>
-<summary><b>Q: 如何切换到更大的 MovieLens 数据集？</b></summary>
-
-修改 `.env` 中的 `MOVIELENS_URL` 为对应数据集的 URL（如 `ml-latest`），并调整 `MOVIELENS_DATA_DIR`。重新运行 `build_index.py` 即可。
-</details>
-
-<details>
-<summary><b>Q: Docker Compose 启动后前端无法访问？</b></summary>
-
-检查 `docker-compose ps` 确认三个容器都在运行。首次启动 `api` 需要训练模型，`frontend` 依赖 `api` 健康检查通过后才启动。查看日志：`docker-compose logs -f api`。
-</details>
+```text
+30 分钟
+```
 
 ---
 
-## 🔮 后续规划
+### 14.2 实时用户画像缓存
 
-- [ ] **多路召回融合**：Embedding 召回 + 协同过滤召回 + 热门召回
-- [ ] **在线学习**：基于用户实时反馈更新模型 (Flink/Spark Streaming)
-- [ ] **A/B 实验框架**：支持多模型在线效果对比
-- [ ] **DeepFM/Wide&Deep**：引入深度排序模型作为 XGBoost 的替代
-- [ ] **GPU 加速**：FAISS GPU 版本支持更大规模数据集
-- [ ] **监控告警**：Prometheus + Grafana 监控推荐延迟与命中率
-- [ ] **推荐理由**：输出可解释的推荐原因（"因为你喜欢 XX 类型"）
-- [ ] **用户反馈闭环**：支持点赞/踩/不感兴趣等隐式反馈
+```text
+user:realtime_profile:{user_id}
+```
+
+用于记录用户最近点击、点赞、点踩、不感兴趣等行为。
 
 ---
 
-## 📝 许可证
+### 14.3 A/B 实验分组缓存
 
-本项目采用 [MIT License](LICENSE) 开源。
+```text
+ab_group:{user_id}
+```
 
-MovieLens 数据集版权归 [GroupLens Research](https://grouplens.org/datasets/movielens/) 所有，使用需遵循其许可条款。
-
----
-
-## 🙏 致谢
-
-- [GroupLens Research](https://grouplens.org/) — MovieLens 数据集
-- [Facebook Research](https://github.com/facebookresearch/faiss) — FAISS 向量检索引擎
-- [XGBoost](https://xgboost.readthedocs.io/) — 梯度提升决策树框架
-- [FastAPI](https://fastapi.tiangolo.com/) — 现代化的 Python Web 框架
-- [Vue.js](https://vuejs.org/) — 渐进式 JavaScript 框架
+用于保持用户实验组稳定。
 
 ---
 
-<p align="center">
-  <b>⭐ 如果这个项目对你有帮助，请给一个 Star！</b>
-  <br>
-  <sub>Made with ❤️ for the recommendation systems community</sub>
-</p>
+## 十五、后端 API 设计
+
+系统后端使用 FastAPI。
+
+核心接口如下：
+
+| 接口                          | 方法   | 功能              |
+| --------------------------- | ---- | --------------- |
+| /api/recommend/{user_id}    | GET  | 获取用户个性化推荐       |
+| /api/movies/{movie_id}      | GET  | 获取电影详情          |
+| /api/search                 | GET  | 搜索电影            |
+| /api/user/profile/{user_id} | GET  | 获取用户画像          |
+| /api/feedback               | POST | 提交用户反馈          |
+| /api/evaluate/metrics       | GET  | 获取模型评估指标        |
+| /api/evaluate/ablation      | GET  | 获取消融实验结果        |
+| /api/ab/metrics             | GET  | 获取 A/B 实验指标     |
+| /api/monitor/summary        | GET  | 获取系统监控摘要        |
+| /metrics                    | GET  | Prometheus 指标接口 |
+
+推荐接口流程：
+
+```text
+请求 /api/recommend/{user_id}
+        ↓
+检查 Redis 缓存
+        ↓
+缓存命中：直接返回
+        ↓
+缓存未命中：执行召回、排序、重排
+        ↓
+生成推荐理由
+        ↓
+写入 Redis
+        ↓
+返回推荐结果
+```
+
+---
+
+## 十六、前端功能页面设计
+
+前端使用 Vue 3 开发，整体设计成电影推荐平台。
+
+---
+
+### 16.1 首页推荐页
+
+功能：
+
+1. 展示用户个性化推荐 Top-10。
+2. 展示热门电影。
+3. 展示推荐理由。
+4. 支持点赞、点踩、不感兴趣、已看过。
+5. 点击电影进入详情页。
+
+卡片内容：
+
+```text
+电影封面
+电影名称
+年份
+类型
+推荐分数
+推荐理由
+反馈按钮
+```
+
+---
+
+### 16.2 电影搜索页
+
+功能：
+
+1. 按电影名称搜索。
+2. 按类型筛选。
+3. 按年份筛选。
+4. 展示搜索结果。
+5. 支持进入电影详情页。
+
+---
+
+### 16.3 电影详情页
+
+功能：
+
+1. 展示电影基础信息。
+2. 展示电影类型、年份、封面、简介。
+3. 展示相似电影推荐。
+4. 展示用户评分入口。
+5. 展示推荐理由。
+6. 支持收藏、点赞、点踩。
+
+---
+
+### 16.4 用户画像页
+
+功能：
+
+1. 展示用户偏好类型。
+2. 展示用户评分分布。
+3. 展示用户喜欢的电影年代。
+4. 展示历史高分电影。
+5. 展示实时兴趣变化。
+
+可视化图表：
+
+```text
+类型偏好雷达图
+评分分布柱状图
+年代偏好折线图
+近期兴趣标签云
+```
+
+---
+
+### 16.5 推荐效果评估页
+
+功能：
+
+1. 展示不同模型 Precision@10。
+2. 展示不同模型 Recall@10。
+3. 展示不同模型 NDCG@10。
+4. 展示 HitRate@10、Coverage、Diversity。
+5. 展示 XGBoost 特征重要性。
+6. 展示模型版本对比。
+
+---
+
+### 16.6 消融实验页面
+
+功能：
+
+1. 展示完整模型和各消融版本。
+2. 展示去掉 LightGCN 后的指标变化。
+3. 展示去掉 XGBoost 后的指标变化。
+4. 展示去掉 MMR 后 Diversity 的变化。
+5. 输出实验结论，证明各模块有效。
+
+---
+
+### 16.7 A/B 实验页面
+
+功能：
+
+1. 展示当前实验列表。
+2. 展示 A 组和 B 组模型。
+3. 展示点击率、点赞率、点踩率。
+4. 展示 Precision@10、Diversity 对比。
+5. 展示实验结论。
+
+---
+
+### 16.8 系统监控页面
+
+功能：
+
+1. 展示推荐接口 QPS。
+2. 展示接口平均延迟。
+3. 展示 Redis 命中率。
+4. 展示 FAISS 召回耗时。
+5. 展示 XGBoost 排序耗时。
+6. 展示推荐点击率。
+7. 展示异常告警状态。
+
+---
+
+### 16.9 后台管理页面
+
+功能：
+
+1. 电影数据管理。
+2. 用户数据管理。
+3. 推荐结果管理。
+4. 用户反馈管理。
+5. 模型指标管理。
+6. 消融实验结果管理。
+7. A/B 实验管理。
+8. 监控指标查看。
+
+---
+
+## 十七、完整推荐请求流程
+
+一次完整推荐请求流程如下：
+
+```text
+用户打开首页
+        ↓
+Vue 调用 /api/recommend/{user_id}
+        ↓
+FastAPI 接收请求
+        ↓
+查询 Redis：recommend:{user_id}
+        ↓
+如果命中，直接返回推荐列表
+        ↓
+如果未命中，读取用户画像和实时画像
+        ↓
+FAISS Embedding 召回 Top-200
+        ↓
+ALS / ItemCF / LightGCN / 内容 / 热门召回补充候选
+        ↓
+候选集去重与融合
+        ↓
+构建排序特征
+        ↓
+XGBoost 对候选电影打分
+        ↓
+取 Top-50
+        ↓
+MMR 多样性重排
+        ↓
+生成 Top-10
+        ↓
+生成推荐理由
+        ↓
+写入 Redis
+        ↓
+返回 Vue 前端
+        ↓
+用户点击 / 点赞 / 点踩 / 不感兴趣
+        ↓
+写入 feedback_logs 和 recommendation_logs
+        ↓
+更新 Redis 实时用户画像
+        ↓
+进入下一轮推荐闭环
+```
+
+---
+
+## 十八、项目实现优先级
+
+### 18.1 必须完成
+
+```text
+Spark 数据处理
+Spark ALS
+FAISS Embedding 召回
+ItemCF 召回
+热门召回
+XGBoost 精排
+MMR 重排
+离线推荐效果评估
+消融实验
+推荐理由
+用户反馈闭环
+Vue 推荐页面
+Vue 评估页面
+Redis 推荐缓存
+```
+
+---
+
+### 18.2 尽量完成
+
+```text
+LightGCN 图召回
+A/B 实验框架
+Prometheus + Grafana 监控
+用户画像页面
+电影封面补充
+推荐日志管理
+特征重要性展示
+消融实验页面
+```
+
+---
+
+### 18.3 扩展预留
+
+```text
+DeepFM / Wide&Deep
+FAISS GPU
+LLM 推荐理由生成
+Flink 完整实时训练
+模型版本自动切换
+A/B 实验自动决策
+```
+
+---
+
+## 十九、评分项对应关系
+
+| 评分项      | 本系统对应实现                                                                          |
+| -------- | -------------------------------------------------------------------------------- |
+| 数据处理与预处理 | Spark 清洗 MovieLens 数据、评分归一化、类型解析、训练测试划分、画像构建                                     |
+| 系统设计     | Spark 离线层 + 多路召回层 + LightGCN 图召回 + XGBoost 排序层 + MMR 重排层 + FastAPI + Redis + Vue |
+| Web 开发   | 首页推荐、搜索页、详情页、用户画像页、推荐评估页、消融实验页、A/B 实验页、监控页                                       |
+| 推荐算法实现   | ALS、FAISS、ItemCF、LightGCN、Content-Based、Popular、XGBoost、DeepFM 扩展                |
+| 召回、排序、重排 | Embedding 召回 + 协同过滤召回 + LightGCN 图召回 + 热门召回 + XGBoost 精排 + MMR 重排                |
+| 数据库存储    | MySQL / SQLite 存储用户、电影、评分、推荐结果、反馈日志、模型指标、消融实验结果，Redis 缓存推荐结果                     |
+
+---
+
+## 二十、系统创新点
+
+1. 多阶段推荐链路完整
+   系统实现召回、融合、排序、重排完整流程，而不是简单相似度推荐。
+
+2. Spark 离线计算增强数据处理能力
+   使用 Spark 完成大规模评分数据清洗、画像构建和 ALS 训练。
+
+3. FAISS 向量召回提升候选集检索效率
+   使用电影 Embedding 构建向量索引，实现快速近似最近邻召回。
+
+4. LightGCN 图召回引入高阶协同信号
+   通过用户-电影-类型-导演-演员图结构学习高阶关系，提升稀疏场景下的召回能力。
+
+5. XGBoost 精排提升推荐准确性
+   融合用户特征、电影特征、交叉特征和召回特征进行排序。
+
+6. MMR 重排提升推荐多样性
+   避免推荐结果同质化，提高用户体验。
+
+7. 推荐理由提升系统可解释性
+   每条推荐结果给出原因，例如“因为你喜欢某类电影”或“与高分电影相似”，增强用户信任。
+
+8. 离线评估与消融实验提供技术证明
+   通过 Precision@K、Recall@K、NDCG@K 等指标评估模型，并用消融实验验证每一步改进有效。
+
+9. 用户反馈闭环增强系统自适应能力
+   用户点赞、点踩、不感兴趣等行为可以实时影响短期兴趣画像。
+
+10. A/B 实验支持多模型效果对比
+    支持不同推荐模型在线对比，展示点击率、点赞率和推荐指标差异。
+
+11. Prometheus + Grafana 监控增强工程完整性
+    可以监控推荐延迟、缓存命中率、召回耗时、排序耗时和用户反馈指标。
+
+---
+
+## 二十一、最终总结
+
+本系统基于开源 MovieRec 项目进行二次开发，围绕电影推荐业务构建了一个完整的多阶段推荐平台。系统使用 MovieLens 数据集作为基础数据源，通过 Spark 完成数据清洗、用户画像、电影画像、训练测试集划分和 ALS 训练；通过 FAISS 实现基于电影向量的 Embedding 召回；通过 ALS、ItemCF、LightGCN、内容召回和热门召回构建多路候选集；通过 XGBoost 对候选电影进行精排；最后使用 MMR 对 Top-N 推荐结果进行多样性重排。
+
+在工程实现方面，系统使用 FastAPI 提供推荐服务，Redis 缓存推荐结果和实时用户画像，Vue 前端展示推荐结果、电影详情、用户画像、推荐评估、消融实验、A/B 实验和系统监控。系统支持用户点赞、点踩、不感兴趣等反馈行为，并通过 Spark Streaming 或 Flink 更新短期兴趣画像，形成推荐闭环。
+
+在算法验证方面，系统构建完整的离线评估 pipeline，使用 Precision@10、Recall@10、NDCG@10、HitRate@10、Coverage、Diversity 等指标评估推荐效果，并通过消融实验对比“Embedding 召回 + 简单排序”“多路召回”“多路召回 + XGBoost”“多路召回 + XGBoost + MMR”“加入 LightGCN 图召回”等不同模型版本，从而证明各模块对推荐效果的提升作用。
+
+该系统能够较好覆盖课程评分标准中的数据处理、系统设计、Web 开发、推荐算法实现、召回排序重排和数据库存储要求，具备较强的技术深度、系统完整性、可解释性和后续扩展能力。
