@@ -407,6 +407,12 @@ pip install -r requirements.txt
 # 下载 MovieLens 数据集 (ml-latest-small)
 python scripts/download_data.py
 
+# 可选：补全 TMDB 海报、背景图、简介等展示信息
+# 1) 在 https://www.themoviedb.org/ 注册/登录账号
+# 2) 进入 Settings -> API 申请 API Key
+# 3) 将 Key 写入本地 .env：TMDB_API_KEY=你的_key
+python scripts/enrich_movie_metadata.py
+
 # 一键执行完整管线:
 #   数据下载 → 特征工程 → MF 训练 → FAISS 索引构建 → XGBoost 训练
 python scripts/build_index.py
@@ -422,6 +428,8 @@ python scripts/build_index.py
 | Step 4 | 构建 FAISS HNSW 索引 | ~3s |
 | Step 5 | 训练 XGBoost 排序模型 | ~60s |
 | **总计** | | **约 2 分钟** |
+
+`enrich_movie_metadata.py` 会自动查找当前根目录或 `data/ml-latest-small` 中的 `movies.csv`、`links.csv`，并生成 `movie_metadata.csv`。如果没有设置 `TMDB_API_KEY`，脚本会生成只含基础字段的文件，系统仍可正常运行，只是没有封面图。
 
 #### 3. 启动 Redis
 
@@ -454,6 +462,17 @@ npm run dev
 
 前端开发服务器：http://localhost:3000
 
+补全 `movie_metadata.csv` 后，重新启动后端和前端即可看到海报：
+
+```bash
+# 后端
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+# 前端
+cd frontend
+npm run dev
+```
+
 ---
 
 ### Docker 一键部署
@@ -482,6 +501,20 @@ docker-compose logs -f api
 | Frontend | `rec-frontend` | 3000 | Vue 3 SPA，Nginx 静态服务 |
 
 > ⚠️ **注意**：首次启动 `api` 容器会自动下载数据并训练模型，约需 2~3 分钟。通过 `docker-compose logs -f api` 查看进度。
+
+Docker 方式同样支持 TMDB Key。推荐在 `.env` 中配置：
+
+```env
+TMDB_API_KEY=your_tmdb_api_key_here
+```
+
+如果需要在 Docker 数据目录内生成海报元数据，可先运行：
+
+```bash
+python scripts/download_data.py
+python scripts/enrich_movie_metadata.py
+docker-compose restart api frontend
+```
 
 ---
 
@@ -541,7 +574,15 @@ curl "http://localhost:8000/recommend/1?top_k=10"
     {
       "movie_id": 318,
       "title": "Shawshank Redemption, The (1994)",
-      "score": 0.9821
+      "score": 0.9821,
+      "genres": "Crime|Drama",
+      "poster_url": "https://image.tmdb.org/t/p/w500/...",
+      "backdrop_url": "https://image.tmdb.org/t/p/w780/...",
+      "overview": "电影简介...",
+      "release_date": "1994-09-23",
+      "runtime": 142,
+      "vote_average": 8.7,
+      "popularity": 120.4
     },
     {
       "movie_id": 858,
@@ -583,7 +624,14 @@ curl "http://localhost:8000/movie/1"
   "avg_rating": 3.92,
   "rating_count": 215,
   "popularity_score": 3.84,
-  "year": 1995.0
+  "year": 1995.0,
+  "poster_url": "https://image.tmdb.org/t/p/w500/...",
+  "backdrop_url": "https://image.tmdb.org/t/p/w780/...",
+  "overview": "电影简介...",
+  "release_date": "1995-10-30",
+  "runtime": 81,
+  "vote_average": 8.0,
+  "popularity": 98.2
 }
 ```
 
@@ -644,7 +692,7 @@ curl -X POST "http://localhost:8000/rebuild-index"
 | 组件 | 功能 |
 |------|------|
 | `NavBar.vue` | 顶部导航栏，路由切换 |
-| `MovieCard.vue` | 电影卡片：海报占位图 + 评分 + 年份 |
+| `MovieCard.vue` | 电影卡片：海报/占位卡片 + 类型 + 评分 + 上映日期 + 简介悬停层 |
 | `PopularMovies.vue` | 热门电影横向滚动列表 |
 | `UserProfile.vue` | 用户画像：活跃度 + 流派偏好雷达 |
 
