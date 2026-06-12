@@ -29,6 +29,7 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - DEBUG=false
+      - TMDB_API_KEY=${TMDB_API_KEY:-}
     env_file:
       - .env
     volumes:

@@ -4,6 +4,7 @@ Loads from .env file and environment variables.
 """
 import os
 from pathlib import Path
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 
@@ -61,11 +62,24 @@ class Settings(BaseSettings):
     # Data
     movielens_data_dir: str = str(PROJECT_ROOT / "data" / "ml-latest-small")
     movielens_url: str = "https://files.grouplens.org/datasets/movielens/ml-latest-small.zip"
+    tmdb_api_key: str = ""
+    recommendation_db_path: str = str(PROJECT_ROOT / "data" / "recommendations.db")
 
     # Recommendation
     recall_top_k: int = 200
     final_top_k: int = 20
     popular_fallback_count: int = 50
+
+    @field_validator("debug", mode="before")
+    @classmethod
+    def parse_debug_flag(cls, value):
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"release", "prod", "production"}:
+                return False
+            if normalized in {"dev", "development"}:
+                return True
+        return value
 
     model_config = {
         "env_file": str(PROJECT_ROOT / ".env"),

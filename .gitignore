@@ -18,6 +18,13 @@ env/
 # Models and data (large binary files)
 models/
 data/
+qwen_model/
+wheels/
+*.safetensors
+*.pt
+*.pth
+*.onnx
+*.faiss
 
 # IDE
 .vscode/
@@ -35,6 +42,8 @@ data/
 htmlcov/
 .coverage
 .coverage.*
+.mypy_cache/
+.ruff_cache/
 
 # Docker
 .docker/
@@ -47,6 +56,20 @@ frontend/.vite/
 # Logs
 *.log
 logs/
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Spark local outputs
+spark-warehouse/
+metastore_db/
+derby.log
+_temporary/
+_spark_metadata/
+*.parquet/
+*.orc/
 
 # OS
 Thumbs.db

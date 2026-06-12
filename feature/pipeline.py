@@ -12,7 +12,7 @@ import pandas as pd
 from scipy.sparse import csr_matrix
 from sklearn.preprocessing import LabelEncoder
 
-from app.config import get_settings
+from app.config import PROJECT_ROOT, get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,8 @@ class FeaturePipeline:
         self.movies: Optional[pd.DataFrame] = None
         self.tags: Optional[pd.DataFrame] = None
         self.links: Optional[pd.DataFrame] = None
+        self.movie_metadata: Optional[pd.DataFrame] = None
+        self.movie_metadata_path: Optional[Path] = None
 
         # Processed data
         self.rating_matrix: Optional[csr_matrix] = None
@@ -58,12 +60,43 @@ class FeaturePipeline:
         self.movies = pd.read_csv(self.data_dir / "movies.csv")
         self.tags = pd.read_csv(self.data_dir / "tags.csv")
         self.links = pd.read_csv(self.data_dir / "links.csv")
+        self.movie_metadata = self._load_movie_metadata()
 
         logger.info(
             f"Loaded: ratings={len(self.ratings)}, movies={len(self.movies)}, "
             f"tags={len(self.tags)}, links={len(self.links)}"
         )
         return self
+
+    def _metadata_candidates(self) -> list[Path]:
+        """Return possible movie_metadata.csv locations in preference order."""
+        return [
+            self.data_dir / "movie_metadata.csv",
+            self.settings.data_dir / "ml-latest-small" / "movie_metadata.csv",
+            PROJECT_ROOT / "movie_metadata.csv",
+        ]
+
+    def _load_movie_metadata(self) -> Optional[pd.DataFrame]:
+        """Load optional TMDB metadata without making startup depend on it."""
+        for path in self._metadata_candidates():
+            if not path.exists():
+                continue
+            try:
+                metadata = pd.read_csv(path)
+                if "movieId" not in metadata.columns:
+                    logger.warning("Ignoring %s: missing movieId column", path)
+                    continue
+                metadata["movieId"] = pd.to_numeric(metadata["movieId"], errors="coerce").astype("Int64")
+                metadata = metadata.dropna(subset=["movieId"]).copy()
+                metadata["movieId"] = metadata["movieId"].astype(int)
+                self.movie_metadata_path = path
+                logger.info("Loaded movie metadata from %s (%s rows)", path, len(metadata))
+                return metadata
+            except Exception as e:
+                logger.warning("Failed to load movie metadata from %s: %s", path, e)
+        self.movie_metadata_path = None
+        logger.info("movie_metadata.csv not found; continuing with MovieLens titles only")
+        return None
 
     def clean_data(self) -> "FeaturePipeline":
         """Clean data: drop duplicates, handle missing values, validate integrity."""
@@ -160,9 +193,94 @@ class FeaturePipeline:
                     genre_matrix[i, genres.index(g)] = 1.0
         self.movies["genre_vector"] = list(genre_matrix)
 
+        self._merge_movie_metadata()
+
         self.movie_features = self.movies.copy()
         logger.info(f"Movie features built: {len(self.movie_features)} movies, {len(genres)} genres")
         return self
+
+    def _merge_movie_metadata(self) -> None:
+        """Merge optional TMDB display metadata into the movie feature table."""
+        if self.movies is None:
+            return
+
+        metadata = self.movie_metadata
+        if metadata is None or metadata.empty:
+            self._ensure_metadata_columns()
+            return
+
+        metadata = metadata.copy()
+        old_metadata_columns = [
+            "tmdb_id",
+            "imdb_id",
+            "poster_url",
+            "backdrop_url",
+            "overview",
+            "release_date",
+            "runtime",
+            "vote_average",
+            "popularity",
+        ]
+        self.movies = self.movies.drop(columns=[c for c in old_metadata_columns if c in self.movies.columns])
+        rename_map = {
+            "tmdbId": "tmdb_id",
+            "imdbId": "imdb_id",
+            "title": "metadata_title",
+            "genres": "metadata_genres",
+        }
+        metadata = metadata.rename(columns={k: v for k, v in rename_map.items() if k in metadata.columns})
+
+        keep_columns = [
+            "movieId",
+            "tmdb_id",
+            "imdb_id",
+            "poster_url",
+            "backdrop_url",
+            "overview",
+            "release_date",
+            "runtime",
+            "vote_average",
+            "popularity",
+        ]
+        metadata = metadata[[c for c in keep_columns if c in metadata.columns]]
+
+        self.movies["movieId"] = pd.to_numeric(self.movies["movieId"], errors="coerce").astype(int)
+        self.movies = self.movies.merge(metadata, on="movieId", how="left")
+        self._ensure_metadata_columns()
+        logger.info("Movie metadata merged into feature table")
+
+    def _ensure_metadata_columns(self) -> None:
+        if self.movies is None:
+            return
+
+        text_defaults = {
+            "poster_url": "",
+            "backdrop_url": "",
+            "overview": "",
+            "release_date": "",
+            "imdb_id": "",
+        }
+        numeric_defaults = {
+            "runtime": np.nan,
+            "vote_average": np.nan,
+            "popularity": np.nan,
+            "tmdb_id": np.nan,
+        }
+
+        for col, default in text_defaults.items():
+            if col not in self.movies.columns:
+                self.movies[col] = default
+            self.movies[col] = (
+                self.movies[col]
+                .fillna(default)
+                .astype(str)
+                .replace({"nan": default, "None": default, "<NA>": default})
+            )
+
+        for col, default in numeric_defaults.items():
+            if col not in self.movies.columns:
+                self.movies[col] = default
+            self.movies[col] = pd.to_numeric(self.movies[col], errors="coerce")
 
     def build_user_features(self) -> "FeaturePipeline":
         """Build user feature vectors: rating behavior, genre preferences, activity."""
@@ -232,6 +350,48 @@ class FeaturePipeline:
             pickle.dump(self, f)
         logger.info(f"Pipeline saved to {path}")
 
+    def refresh_movie_metadata(self) -> "FeaturePipeline":
+        """Refresh optional TMDB metadata after loading a cached pipeline."""
+        self.movie_metadata = self._load_movie_metadata()
+        self._merge_movie_metadata()
+        if self.movie_features is not None:
+            feature_cols = [c for c in self.movies.columns if c not in self.movie_features.columns]
+            if feature_cols:
+                self.movie_features = self.movie_features.merge(
+                    self.movies[["movieId", *feature_cols]],
+                    on="movieId",
+                    how="left",
+                )
+            metadata_cols = [
+                "poster_url",
+                "backdrop_url",
+                "overview",
+                "release_date",
+                "runtime",
+                "vote_average",
+                "popularity",
+                "tmdb_id",
+                "imdb_id",
+            ]
+            for col in metadata_cols:
+                if col in self.movies.columns:
+                    values_by_movie_id = self.movies.set_index("movieId")[col]
+                    self.movie_features[col] = self.movie_features["movieId"].map(values_by_movie_id)
+        else:
+            self.movie_features = self.movies.copy()
+        return self
+
+    def metadata_cache_token(self) -> str:
+        """Return a small token used to avoid serving stale display metadata from cache."""
+        path = getattr(self, "movie_metadata_path", None)
+        if not path or not Path(path).exists():
+            return "no_metadata"
+        try:
+            stat = Path(path).stat()
+            return f"metadata_{int(stat.st_mtime)}_{stat.st_size}"
+        except OSError:
+            return "metadata_unknown"
+
     @classmethod
     def load(cls, path: Optional[str] = None) -> "FeaturePipeline":
         """Load a previously saved pipeline state."""
@@ -239,6 +399,11 @@ class FeaturePipeline:
         path = Path(path) if path else Path(settings.feature_cache_path)
         with open(path, "rb") as f:
             obj = pickle.load(f)
+        if not hasattr(obj, "settings"):
+            obj.settings = settings
+        if not hasattr(obj, "data_dir"):
+            obj.data_dir = Path(settings.movielens_data_dir)
+        obj.refresh_movie_metadata()
         logger.info(f"Pipeline loaded from {path}")
         return obj
 
@@ -252,6 +417,13 @@ class FeaturePipeline:
         if movie.empty:
             return {}
         row = movie.iloc[0]
+        def text_value(name: str) -> str:
+            value = row.get(name, "")
+            if pd.isna(value):
+                return ""
+            value = str(value)
+            return "" if value in {"nan", "None", "<NA>"} else value
+
         return {
             "movie_id": int(row["movieId"]),
             "title": str(row["title"]),
@@ -260,6 +432,15 @@ class FeaturePipeline:
             "rating_count": int(row.get("rating_count", 0)),
             "popularity_score": float(row.get("popularity_score", 0)),
             "year": float(row.get("year", 0)) if pd.notna(row.get("year")) else None,
+            "poster_url": text_value("poster_url"),
+            "backdrop_url": text_value("backdrop_url"),
+            "overview": text_value("overview"),
+            "release_date": text_value("release_date"),
+            "runtime": int(row.get("runtime")) if pd.notna(row.get("runtime")) else None,
+            "vote_average": float(row.get("vote_average")) if pd.notna(row.get("vote_average")) else None,
+            "popularity": float(row.get("popularity")) if pd.notna(row.get("popularity")) else None,
+            "tmdb_id": int(row.get("tmdb_id")) if pd.notna(row.get("tmdb_id")) else None,
+            "imdb_id": text_value("imdb_id"),
         }
 
     def get_popular_movies(self, n: int = 50) -> list:

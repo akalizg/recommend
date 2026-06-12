@@ -33,6 +33,8 @@ from recall.recall_service import RecallService
 from rank.train import train_rank_model, load_rank_model
 from rank.rank_model import RankingService
 from cache.redis_cache import get_cache
+from feedback.feedback_service import FeedbackService
+from experiment.ab_service import ABService
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +51,7 @@ def initialize_services():
     5. RankingService (XGBoost model loading/training)
     6. RedisCache (caching layer)
     7. UserProfileBuilder (profile queries)
+    8. FeedbackService (feedback logs and realtime profile)
     """
     settings = get_settings()
     state = _app_state
@@ -136,6 +139,8 @@ def initialize_services():
     # ---- 7. User Profile Builder ----
     logger.info("[7/7] Initializing user profile builder...")
     state.user_profile_builder = UserProfileBuilder(state.pipeline)
+    state.feedback_service = FeedbackService(cache=state.cache)
+    state.ab_service = ABService(cache=state.cache)
 
     logger.info("=== All services initialized ===")
 

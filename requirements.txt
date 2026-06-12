@@ -9,6 +9,7 @@ pandas==2.2.3
 numpy==2.2.2
 scipy==1.15.1
 scikit-learn==1.6.1
+pyspark==3.5.3
 
 # FAISS
 faiss-cpu==1.9.0.post1
@@ -16,6 +17,9 @@ faiss-cpu==1.9.0.post1
 # Machine Learning
 xgboost==2.1.4
 lightgbm==4.5.0
+torch==2.12.0
+transformers==5.11.0
+accelerate==1.14.0
 
 # Redis
 redis==5.2.1
