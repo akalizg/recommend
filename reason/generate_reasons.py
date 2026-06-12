@@ -36,6 +36,14 @@ OUTPUT_COLUMNS = [
     "final_reason",
     "reason_source",
     "reason_evidence",
+    "image_url",
+    "recipe_yield_raw",
+    "serves_best_guess",
+    "ready_in_display",
+    "author_name",
+    "photo_count",
+    "rating_value",
+    "review_count",
 ]
 
 logger = logging.getLogger(__name__)
@@ -65,12 +73,29 @@ def generate_reasons(
     if not input_file.exists():
         raise FileNotFoundError(f"Recommendation input not found: {input_file}")
     if not movie_profile_file.exists():
-        raise FileNotFoundError(f"Movie profile not found: {movie_profile_file}")
+        raise FileNotFoundError(f"Item profile not found: {movie_profile_file}")
 
     recs = pd.read_csv(input_file)
     if limit is not None and limit > 0:
         recs = recs.head(limit).copy()
-    movie_profile = pd.read_csv(movie_profile_file, usecols=lambda col: col in {"movieId", "title", "genres", "movie_avg_rating"})
+    movie_profile = pd.read_csv(
+        movie_profile_file,
+        usecols=lambda col: col
+        in {
+            "movieId",
+            "title",
+            "genres",
+            "movie_avg_rating",
+            "image_url",
+            "recipe_yield_raw",
+            "serves_best_guess",
+            "ready_in_display",
+            "author_name",
+            "photo_count",
+            "rating_value",
+            "review_count",
+        },
+    )
     recs = recs.merge(movie_profile, on="movieId", how="left", suffixes=("", "_profile"))
 
     if "movie_avg_rating_profile" in recs.columns:
@@ -94,7 +119,7 @@ def generate_reasons(
         item["template_reason"] = template_reason
         result = generator.generate(item, use_llm=use_llm)
         evidence = {
-            "movie_avg_rating": item.get("movie_avg_rating"),
+            "item_avg_rating": item.get("movie_avg_rating"),
             "genre_match_score": item.get("genre_match_score"),
             "rank_position": item.get("rank_position"),
         }

@@ -13,12 +13,18 @@ import sys
 import tempfile
 from pathlib import Path
 
+try:
+    from spark_utils import build_spark_session
+except ModuleNotFoundError:
+    from spark_jobs.spark_utils import build_spark_session
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_TRAIN = PROJECT_ROOT / "data" / "processed" / "train_ratings.csv"
 DEFAULT_MOVIES = PROJECT_ROOT / "data" / "processed" / "movies_clean.csv"
 DEFAULT_TAGS = PROJECT_ROOT / "data" / "processed" / "movie_tags.csv"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "data" / "features"
+DEFAULT_MAX_TAGS_PER_MOVIE = 50
 USER_PROFILE_COLUMNS = (
     "userId",
     "user_rating_count",
@@ -59,6 +65,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tags", default=str(DEFAULT_TAGS), help="Movie tags CSV.")
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR), help="Profile output directory.")
     parser.add_argument("--top-n", type=int, default=20, help="Top-N movie IDs stored in user profile lists.")
+    parser.add_argument("--max-tags-per-movie", type=int, default=DEFAULT_MAX_TAGS_PER_MOVIE, help="Maximum tag tokens kept in each movie profile.")
     return parser.parse_args()
 
 
@@ -79,12 +86,12 @@ def require_pyspark():
 def create_spark_session(app_name: str = "MovieRecSparkBuildProfile"):
     SparkSession, _, _, _ = require_pyspark()
     try:
-        return (
-            SparkSession.builder.appName(app_name)
-            .master("local[*]")
-            .config("spark.sql.session.timeZone", "UTC")
-            .config("spark.ui.showConsoleProgress", "false")
-            .getOrCreate()
+        return build_spark_session(
+            SparkSession,
+            app_name,
+            default_driver_memory="6g",
+            default_executor_memory="6g",
+            default_shuffle_partitions=64,
         )
     except Exception as exc:
         raise RuntimeError(
@@ -139,6 +146,7 @@ def build_profiles(
     tags_path: str | Path | None = None,
     output_dir: str | Path | None = None,
     top_n: int = 20,
+    max_tags_per_movie: int = DEFAULT_MAX_TAGS_PER_MOVIE,
 ) -> dict:
     """Build user and movie profile CSV files and return summary metrics."""
     _, Window, F, T = require_pyspark()
@@ -149,6 +157,8 @@ def build_profiles(
     user_output = output_path / "user_profile.csv"
     movie_output = output_path / "movie_profile.csv"
     _require_files(train_file, movies_file, tags_file)
+    if max_tags_per_movie < 1:
+        raise ValueError("max_tags_per_movie must be positive.")
 
     logger.info("Train ratings input: %s", train_file)
     logger.info("Movies input: %s", movies_file)
@@ -315,7 +325,18 @@ def build_profiles(
             .fillna({"movie_rating_std": 0.0})
             .withColumn("movie_popularity", F.col("movie_avg_rating") * F.log(F.col("movie_rating_count") + F.lit(1.0)))
         )
-        tag_profile = tags.groupBy("movieId").agg(
+        tag_window = Window.partitionBy("movieId").orderBy(
+            F.when(F.col("tag_type") == "recipe_tag", F.lit(0))
+            .when(F.col("tag_type") == "genre", F.lit(1))
+            .otherwise(F.lit(2)),
+            F.col("tag").asc(),
+        )
+        limited_tags = (
+            tags.withColumn("tag_rn", F.row_number().over(tag_window))
+            .where(F.col("tag_rn") <= max_tags_per_movie)
+            .drop("tag_rn")
+        )
+        tag_profile = limited_tags.groupBy("movieId").agg(
             F.concat_ws("|", F.sort_array(F.collect_set("tag"))).alias("tag_text"),
             F.countDistinct("tag").alias("tag_count"),
         )
@@ -376,6 +397,7 @@ def build_profiles(
             "train_rows": train_rows,
             "movies_rows": movies_rows,
             "tags_rows": tags_rows,
+            "max_tags_per_movie": max_tags_per_movie,
             "user_profile_rows": user_profile_rows,
             "movie_profile_rows": movie_profile_rows,
             "valid_users": valid_users,
@@ -390,6 +412,7 @@ def build_profiles(
         logger.info("train ratings rows: %s", train_rows)
         logger.info("movies rows: %s", movies_rows)
         logger.info("tags rows: %s", tags_rows)
+        logger.info("max tags per movie profile: %s", max_tags_per_movie)
         logger.info("user profile rows: %s", user_profile_rows)
         logger.info("movie profile rows: %s", movie_profile_rows)
         logger.info("valid users: %s", valid_users)
@@ -407,7 +430,7 @@ def build_profiles(
 def main() -> None:
     args = parse_args()
     try:
-        build_profiles(args.train, args.movies, args.tags, args.output_dir, args.top_n)
+        build_profiles(args.train, args.movies, args.tags, args.output_dir, args.top_n, args.max_tags_per_movie)
     except Exception as exc:
         logger.error("%s", exc)
         sys.exit(1)

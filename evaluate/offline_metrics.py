@@ -26,9 +26,11 @@ DEFAULT_KS = (5, 10, 20, 50)
 MODEL_FILES = {
     "ALS": PROJECT_ROOT / "data" / "recall" / "als_recall.csv",
     "ItemCF": PROJECT_ROOT / "data" / "recall" / "itemcf_recall.csv",
-    "ALS+ItemCF_Merged": PROJECT_ROOT / "data" / "recall" / "merged_recall_candidates.csv",
+    "FAISS_HNSW": PROJECT_ROOT / "data" / "recall" / "faiss_hnsw_recall.csv",
+    "Merged_Recall": PROJECT_ROOT / "data" / "recall" / "merged_recall_candidates.csv",
     "XGBoost_Top50": PROJECT_ROOT / "data" / "rank" / "ranked_top50.csv",
-    "XGBoost_MMR_Top10": PROJECT_ROOT / "data" / "rank" / "ranked_top10_mmr.csv",
+    "LightGBM_Top50": PROJECT_ROOT / "data" / "rank" / "enhanced" / "ranked_top50_enhanced.csv",
+    "LightGBM_MMR_Top10": PROJECT_ROOT / "data" / "rank" / "ranked_top10_mmr.csv",
 }
 
 METRIC_COLUMNS = [
@@ -142,7 +144,8 @@ def _evaluate_model(
     ks: list[int],
 ) -> list[dict]:
     ranked = _rank_recommendations(recs)
-    users = sorted(set(ranked["userId"].unique()) & set(relevant_by_user.keys()))
+    recs_by_user = ranked.groupby("userId")["movieId"].apply(lambda values: values.astype(int).tolist()).to_dict()
+    users = sorted(set(recs_by_user) & set(relevant_by_user.keys()))
     rows: list[dict] = []
 
     for k in ks:
@@ -157,7 +160,7 @@ def _evaluate_model(
             relevant = relevant_by_user.get(user_id, set())
             if not relevant:
                 continue
-            user_recs = ranked[ranked["userId"] == user_id]["movieId"].head(k).astype(int).tolist()
+            user_recs = recs_by_user.get(user_id, [])[:k]
             recommended_items.update(user_recs)
             hits = [1 if movie_id in relevant else 0 for movie_id in user_recs]
             hit_count = sum(hits)

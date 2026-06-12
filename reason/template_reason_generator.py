@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Mapping
 
 
-FALLBACK_TEMPLATE_REASON = "这部电影和你的历史偏好有一定匹配，值得一看。"
+FALLBACK_TEMPLATE_REASON = "这道食谱和你的历史口味有一定匹配，适合加入备选菜单。"
 
 
 def _text(value: object, default: str = "") -> str:
@@ -38,18 +38,18 @@ def build_template_reason(row: Mapping[str, object]) -> str:
     genre_match_score = _number(row.get("genre_match_score"))
 
     if matched:
-        reason = f"这部电影包含你常看的{matched[0]}元素，和你的偏好比较匹配。"
+        reason = f"这道食谱带有你常选的{matched[0]}标签，和你的口味偏好比较匹配。"
     elif movie_genres:
-        reason = f"这部电影属于{movie_genres[0]}类型，适合作为新的观影选择。"
+        reason = f"这道食谱属于{movie_genres[0]}方向，适合作为新的用餐选择。"
     else:
         reason = FALLBACK_TEMPLATE_REASON
 
     if avg_rating >= 4.2:
-        reason = reason.rstrip("。") + "，整体评分也很高。"
+        reason = reason.rstrip("。") + "，用户评分也很高。"
     elif avg_rating >= 3.8:
-        reason = reason.rstrip("。") + "，观众评价较稳定。"
+        reason = reason.rstrip("。") + "，整体评价较稳定。"
     elif genre_match_score >= 0.5 and not matched:
-        reason = reason.rstrip("。") + "，类型匹配度较高。"
+        reason = reason.rstrip("。") + "，标签匹配度较高。"
 
     return reason[:80] or FALLBACK_TEMPLATE_REASON
 

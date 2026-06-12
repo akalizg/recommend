@@ -1,25 +1,25 @@
-<template>
+﻿<template>
   <div class="space-y-8">
     <!-- Hero -->
     <div class="text-center py-12">
       <h1 class="text-4xl font-bold text-gray-100 mb-3">
-        MovieRec
+        RecipeRec
       </h1>
       <p class="text-gray-400 text-lg mb-6">
-        AI-powered movie recommendations using FAISS HNSW + XGBoost
+        Personalized Food.com recipe recommendations using multi-channel recall and XGBoost
       </p>
       <div class="flex justify-center gap-4">
         <router-link
           to="/recommend"
           class="px-6 py-2.5 bg-primary-600 hover:bg-primary-500 rounded-lg text-white font-medium transition-colors"
         >
-          Get Recommendations
+          Get Recipes
         </router-link>
         <router-link
           to="/search"
           class="px-6 py-2.5 bg-gray-700 hover:bg-gray-600 rounded-lg text-gray-200 font-medium transition-colors"
         >
-          Search Movies
+          Search Recipes
         </router-link>
       </div>
     </div>
@@ -27,15 +27,15 @@
     <!-- Stats Bar -->
     <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
       <div class="bg-gray-800 rounded-xl p-4 text-center">
-        <div class="text-2xl font-bold text-primary-400">9,742</div>
-        <div class="text-xs text-gray-400 mt-1">Movies</div>
+        <div class="text-2xl font-bold text-primary-400">2,973</div>
+        <div class="text-xs text-gray-400 mt-1">Recipes</div>
       </div>
       <div class="bg-gray-800 rounded-xl p-4 text-center">
-        <div class="text-2xl font-bold text-primary-400">610</div>
+        <div class="text-2xl font-bold text-primary-400">491</div>
         <div class="text-xs text-gray-400 mt-1">Users</div>
       </div>
       <div class="bg-gray-800 rounded-xl p-4 text-center">
-        <div class="text-2xl font-bold text-primary-400">100K+</div>
+        <div class="text-2xl font-bold text-primary-400">40K</div>
         <div class="text-xs text-gray-400 mt-1">Ratings</div>
       </div>
       <div class="bg-gray-800 rounded-xl p-4 text-center">
@@ -44,7 +44,7 @@
       </div>
     </div>
 
-    <!-- Popular Movies -->
+    <!-- Popular Recipes -->
     <PopularMovies :limit="20" />
 
     <!-- Tech Stack -->
@@ -57,7 +57,7 @@
         </div>
         <div class="bg-gray-700/50 rounded-lg p-3">
           <div class="text-primary-400 font-semibold">FAISS + HNSW</div>
-          <div class="text-gray-400 text-xs mt-0.5">ANN Retrieval</div>
+          <div class="text-gray-400 text-xs mt-0.5">Recipe Retrieval</div>
         </div>
         <div class="bg-gray-700/50 rounded-lg p-3">
           <div class="text-primary-400 font-semibold">XGBoost</div>
@@ -72,7 +72,7 @@
           <div class="text-gray-400 text-xs mt-0.5">Embeddings</div>
         </div>
         <div class="bg-gray-700/50 rounded-lg p-3">
-          <div class="text-primary-400 font-semibold">MovieLens</div>
+          <div class="text-primary-400 font-semibold">Food.com</div>
           <div class="text-gray-400 text-xs mt-0.5">Dataset</div>
         </div>
         <div class="bg-gray-700/50 rounded-lg p-3">
@@ -91,3 +91,4 @@
 <script setup>
 import PopularMovies from "../components/PopularMovies.vue";
 </script>
+

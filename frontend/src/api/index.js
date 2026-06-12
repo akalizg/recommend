@@ -34,12 +34,20 @@ export function getOfflineMovieProfile(movieId) {
   return api.get(`/offline/movie-profile/${movieId}`);
 }
 
+export function getOfflinePopularRecipes(limit = 20) {
+  return api.get("/offline/popular-recipes", { params: { limit } });
+}
+
 export function getPopular(limit = 50) {
   return api.get("/popular", { params: { limit } });
 }
 
 export function getMovieDetail(movieId) {
   return api.get(`/movie/${movieId}`);
+}
+
+export function getSimilarRecipes(movieId, limit = 8) {
+  return api.get(`/recipe/${movieId}/similar`, { params: { limit } });
 }
 
 export function getUserProfile(userId) {

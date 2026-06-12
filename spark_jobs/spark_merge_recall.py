@@ -4,7 +4,8 @@ Merge multi-channel recall candidates for MovieRec.
 Current channels:
     - ALS recall
     - ItemCF recall
-    - Lightweight LightGCN recall (optional)
+    - FAISS HNSW embedding recall (optional)
+    - LightGCN recall (optional)
     - Content-based recall (optional)
     - Hot/popular recall (optional)
 
@@ -19,10 +20,16 @@ import sys
 import tempfile
 from pathlib import Path
 
+try:
+    from spark_utils import build_spark_session
+except ModuleNotFoundError:
+    from spark_jobs.spark_utils import build_spark_session
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_ALS = PROJECT_ROOT / "data" / "recall" / "als_recall.csv"
 DEFAULT_ITEMCF = PROJECT_ROOT / "data" / "recall" / "itemcf_recall.csv"
+DEFAULT_EMBEDDING = PROJECT_ROOT / "data" / "recall" / "faiss_hnsw_recall.csv"
 DEFAULT_LIGHTGCN = PROJECT_ROOT / "data" / "recall" / "lightgcn_recall.csv"
 DEFAULT_CONTENT = PROJECT_ROOT / "data" / "recall" / "content_recall.csv"
 DEFAULT_HOT = PROJECT_ROOT / "data" / "recall" / "hot_recall.csv"
@@ -54,6 +61,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Merge multi-channel recall candidates.")
     parser.add_argument("--als", default=str(DEFAULT_ALS), help="ALS recall CSV.")
     parser.add_argument("--itemcf", default=str(DEFAULT_ITEMCF), help="ItemCF recall CSV.")
+    parser.add_argument("--embedding", default=str(DEFAULT_EMBEDDING), help="FAISS HNSW embedding recall CSV.")
     parser.add_argument("--lightgcn", default=str(DEFAULT_LIGHTGCN), help="LightGCN recall CSV.")
     parser.add_argument("--content", default=str(DEFAULT_CONTENT), help="Content recall CSV.")
     parser.add_argument("--hot", default=str(DEFAULT_HOT), help="Hot recall CSV.")
@@ -78,13 +86,7 @@ def require_pyspark():
 def create_spark_session(app_name: str = "MovieRecSparkMergeRecall"):
     SparkSession, _, _, _ = require_pyspark()
     try:
-        return (
-            SparkSession.builder.appName(app_name)
-            .master("local[*]")
-            .config("spark.sql.session.timeZone", "UTC")
-            .config("spark.ui.showConsoleProgress", "false")
-            .getOrCreate()
-        )
+        return build_spark_session(SparkSession, app_name)
     except Exception as exc:
         raise RuntimeError(f"Failed to start SparkSession. Original error: {exc}") from exc
 
@@ -109,17 +111,14 @@ def write_single_csv(df, output_path: Path) -> None:
 
 
 def _read_recall(spark, path: Path, expected_type: str):
-    _, _, F, T = require_pyspark()
-    schema = T.StructType(
-        [
-            T.StructField("userId", T.StringType(), True),
-            T.StructField("movieId", T.StringType(), True),
-            T.StructField("recall_type", T.StringType(), True),
-            T.StructField("recall_score", T.StringType(), True),
-        ]
-    )
+    _, _, F, _ = require_pyspark()
+    raw = spark.read.option("header", True).csv(str(path))
+    required = {"userId", "movieId", "recall_type", "recall_score"}
+    missing = sorted(required - set(raw.columns))
+    if missing:
+        raise ValueError(f"Recall input missing columns {missing}: {path}")
     return (
-        spark.read.option("header", True).schema(schema).csv(str(path))
+        raw
         .withColumn("userId", F.col("userId").cast("int"))
         .withColumn("movieId", F.col("movieId").cast("int"))
         .withColumn("recall_score", F.col("recall_score").cast("double"))
@@ -154,6 +153,7 @@ def merge_recall(
     itemcf_path: str | Path | None = None,
     output_path: str | Path | None = None,
     top_n: int = 100,
+    embedding_path: str | Path | None = None,
     lightgcn_path: str | Path | None = None,
     content_path: str | Path | None = None,
     hot_path: str | Path | None = None,
@@ -161,6 +161,7 @@ def merge_recall(
     _, Window, F, _ = require_pyspark()
     als_file = Path(als_path).resolve() if als_path else DEFAULT_ALS
     itemcf_file = Path(itemcf_path).resolve() if itemcf_path else DEFAULT_ITEMCF
+    embedding_file = Path(embedding_path).resolve() if embedding_path else DEFAULT_EMBEDDING
     lightgcn_file = Path(lightgcn_path).resolve() if lightgcn_path else DEFAULT_LIGHTGCN
     content_file = Path(content_path).resolve() if content_path else DEFAULT_CONTENT
     hot_file = Path(hot_path).resolve() if hot_path else DEFAULT_HOT
@@ -173,6 +174,7 @@ def merge_recall(
 
     logger.info("ALS recall input: %s", als_file)
     logger.info("ItemCF recall input: %s", itemcf_file)
+    logger.info("FAISS HNSW embedding recall input: %s", embedding_file if embedding_file.exists() else "missing; skipped")
     logger.info("LightGCN recall input: %s", lightgcn_file if lightgcn_file.exists() else "missing; skipped")
     logger.info("Content recall input: %s", content_file if content_file.exists() else "missing; skipped")
     logger.info("Hot recall input: %s", hot_file if hot_file.exists() else "missing; skipped")
@@ -183,6 +185,11 @@ def merge_recall(
     try:
         als = _read_recall(spark, als_file, "als").withColumnRenamed("recall_score", "als_score")
         itemcf = _read_recall(spark, itemcf_file, "itemcf").withColumnRenamed("recall_score", "itemcf_score")
+        embedding = (
+            _read_recall(spark, embedding_file, "embedding").withColumnRenamed("recall_score", "embedding_score")
+            if embedding_file.exists()
+            else None
+        )
         lightgcn = (
             _read_recall(spark, lightgcn_file, "lightgcn").withColumnRenamed("recall_score", "lightgcn_score")
             if lightgcn_file.exists()
@@ -200,11 +207,14 @@ def merge_recall(
         )
         als_rows = als.count()
         itemcf_rows = itemcf.count()
+        embedding_rows = embedding.count() if embedding is not None else 0
         lightgcn_rows = lightgcn.count() if lightgcn is not None else 0
         content_rows = content.count() if content is not None else 0
         hot_rows = hot.count() if hot is not None else 0
 
         merged = als.join(itemcf, on=["userId", "movieId"], how="full_outer")
+        if embedding is not None:
+            merged = merged.join(embedding, on=["userId", "movieId"], how="full_outer")
         if lightgcn is not None:
             merged = merged.join(lightgcn, on=["userId", "movieId"], how="full_outer")
         if content is not None:
@@ -214,19 +224,20 @@ def merge_recall(
         merged = (
             merged.withColumn("is_als_recall", F.when(F.col("als_score").isNotNull(), F.lit(1)).otherwise(F.lit(0)))
             .withColumn("is_itemcf_recall", F.when(F.col("itemcf_score").isNotNull(), F.lit(1)).otherwise(F.lit(0)))
+            .withColumn("is_embedding_recall", F.when(F.col("embedding_score").isNotNull(), F.lit(1)).otherwise(F.lit(0)) if "embedding_score" in merged.columns else F.lit(0))
             .withColumn("is_lightgcn_recall", F.when(F.col("lightgcn_score").isNotNull(), F.lit(1)).otherwise(F.lit(0)) if "lightgcn_score" in merged.columns else F.lit(0))
             .withColumn("is_content_recall", F.when(F.col("content_score").isNotNull(), F.lit(1)).otherwise(F.lit(0)) if "content_score" in merged.columns else F.lit(0))
             .withColumn("is_hot_recall", F.when(F.col("hot_score").isNotNull(), F.lit(1)).otherwise(F.lit(0)) if "hot_score" in merged.columns else F.lit(0))
             .withColumn("als_score", F.coalesce(F.col("als_score"), F.lit(0.0)))
             .withColumn("itemcf_score", F.coalesce(F.col("itemcf_score"), F.lit(0.0)))
+            .withColumn("embedding_score", F.coalesce(F.col("embedding_score"), F.lit(0.0)) if "embedding_score" in merged.columns else F.lit(0.0))
             .withColumn("lightgcn_score", F.coalesce(F.col("lightgcn_score"), F.lit(0.0)) if "lightgcn_score" in merged.columns else F.lit(0.0))
             .withColumn("content_score", F.coalesce(F.col("content_score"), F.lit(0.0)) if "content_score" in merged.columns else F.lit(0.0))
             .withColumn("hot_score", F.coalesce(F.col("hot_score"), F.lit(0.0)) if "hot_score" in merged.columns else F.lit(0.0))
-            .withColumn("embedding_score", F.lit(0.0))
-            .withColumn("is_embedding_recall", F.lit(0))
         )
         merged = _normalize_by_user(merged, "als_score", "normalized_als_score")
         merged = _normalize_by_user(merged, "itemcf_score", "normalized_itemcf_score")
+        merged = _normalize_by_user(merged, "embedding_score", "normalized_embedding_score")
         merged = _normalize_by_user(merged, "lightgcn_score", "normalized_lightgcn_score")
         merged = _normalize_by_user(merged, "content_score", "normalized_content_score")
         merged = _normalize_by_user(merged, "hot_score", "normalized_hot_score")
@@ -242,11 +253,12 @@ def merge_recall(
             )
             .withColumn(
                 "merged_recall_score",
-                F.lit(0.38) * F.col("normalized_als_score")
-                + F.lit(0.25) * F.col("normalized_itemcf_score")
+                F.lit(0.30) * F.col("normalized_als_score")
+                + F.lit(0.22) * F.col("normalized_itemcf_score")
+                + F.lit(0.16) * F.col("normalized_embedding_score")
                 + F.lit(0.12) * F.col("normalized_lightgcn_score")
-                + F.lit(0.15) * F.col("normalized_content_score")
-                + F.lit(0.10) * F.col("normalized_hot_score")
+                + F.lit(0.12) * F.col("normalized_content_score")
+                + F.lit(0.08) * F.col("normalized_hot_score")
                 + F.lit(0.1) * F.col("recall_source_count"),
             )
         )
@@ -272,6 +284,7 @@ def merge_recall(
             (
                 F.col("is_als_recall")
                 + F.col("is_itemcf_recall")
+                + F.col("is_embedding_recall")
                 + F.col("is_lightgcn_recall")
                 + F.col("is_content_recall")
                 + F.col("is_hot_recall")
@@ -285,6 +298,7 @@ def merge_recall(
         summary = {
             "als_recall_rows": als_rows,
             "itemcf_recall_rows": itemcf_rows,
+            "embedding_recall_rows": embedding_rows,
             "lightgcn_recall_rows": lightgcn_rows,
             "content_recall_rows": content_rows,
             "hot_recall_rows": hot_rows,
@@ -296,6 +310,7 @@ def merge_recall(
         }
         logger.info("als recall rows: %s", als_rows)
         logger.info("itemcf recall rows: %s", itemcf_rows)
+        logger.info("embedding recall rows: %s", embedding_rows)
         logger.info("lightgcn recall rows: %s", lightgcn_rows)
         logger.info("content recall rows: %s", content_rows)
         logger.info("hot recall rows: %s", hot_rows)
@@ -318,6 +333,7 @@ def main() -> None:
             args.itemcf,
             args.output,
             args.top_n,
+            embedding_path=args.embedding,
             lightgcn_path=args.lightgcn,
             content_path=args.content,
             hot_path=args.hot,

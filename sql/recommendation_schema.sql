@@ -1,4 +1,4 @@
--- MovieRec offline recommendation database schema.
+-- RecipeRec offline recommendation database schema.
 -- SQLite-compatible DDL. It stores offline profiles, recommendation results,
 -- evaluation metrics, ablation experiments, and future online feedback logs.
 
@@ -164,6 +164,8 @@ CREATE TABLE IF NOT EXISTS feedback_logs (
     feedback_value REAL,
     request_id TEXT,
     run_id TEXT,
+    experiment_name TEXT,
+    group_name TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
     FOREIGN KEY (movie_id) REFERENCES movies(movie_id) ON DELETE CASCADE
@@ -176,3 +178,6 @@ CREATE INDEX IF NOT EXISTS idx_recommendations_movie_id ON recommendations(movie
 CREATE INDEX IF NOT EXISTS idx_model_metrics_model_k ON model_metrics(model_name, k);
 CREATE INDEX IF NOT EXISTS idx_ablation_metrics_variant_k ON ablation_metrics(variant, k);
 CREATE INDEX IF NOT EXISTS idx_feedback_logs_user_time ON feedback_logs(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_feedback_logs_run_type ON feedback_logs(run_id, feedback_type);
+CREATE INDEX IF NOT EXISTS idx_recommendation_logs_run_event ON recommendation_logs(run_id, event_type);
+CREATE INDEX IF NOT EXISTS idx_recommendation_logs_request ON recommendation_logs(request_id);

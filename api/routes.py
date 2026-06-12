@@ -7,6 +7,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
+import faiss
+import numpy as np
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query, Depends, Response
 
@@ -26,8 +28,13 @@ from api.schemas import (
     OfflineAblationResponse,
     OfflineUserProfileResponse,
     OfflineMovieProfileResponse,
+    OfflinePopularRecipesResponse,
+    SimilarRecipesResponse,
+    ColdStartRequest,
+    ColdStartResponse,
     FeedbackRequest,
     FeedbackResponse,
+    ExposureRequest,
     RealtimeProfileResponse,
     ABGroupResponse,
     ABMetricsResponse,
@@ -47,6 +54,15 @@ OFFLINE_ABLATION_PATH = PROJECT_ROOT / "data" / "eval" / "optimized_ablation_met
 OFFLINE_ABLATION_FALLBACK_PATH = PROJECT_ROOT / "data" / "eval" / "ablation_metrics.csv"
 OFFLINE_USER_PROFILE_PATH = PROJECT_ROOT / "data" / "features" / "user_profile.csv"
 OFFLINE_MOVIE_PROFILE_PATH = PROJECT_ROOT / "data" / "features" / "movie_profile.csv"
+OFFLINE_RECIPE_DETAIL_PATH = PROJECT_ROOT / "data" / "recipe-canonical" / "recipe_detail_metadata.csv"
+FAISS_HNSW_SPARK_INDEX_PATH = PROJECT_ROOT / "models" / "faiss_hnsw_spark.index"
+FAISS_HNSW_SPARK_IDS_PATH = PROJECT_ROOT / "models" / "faiss_hnsw_spark_ids.npy"
+FAISS_SPARK_VECTORS_PATH = PROJECT_ROOT / "data" / "faiss" / "movie_vectors.npy"
+FAISS_SPARK_VECTOR_IDS_PATH = PROJECT_ROOT / "data" / "faiss" / "movie_ids.npy"
+
+_faiss_similarity_cache: dict[str, object] = {}
+_offline_table_cache: dict[str, object] = {}
+_recipe_detail_row_cache: dict[int, dict] = {}
 
 
 def _existing_offline_file(primary: Path, fallback: Optional[Path] = None) -> Path:
@@ -65,6 +81,17 @@ def _read_offline_csv(primary: Path, fallback: Optional[Path] = None) -> tuple[p
     except Exception as exc:
         logger.error("Failed to read offline CSV %s: %s", path, exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to read offline artifact: {path.name}")
+
+
+def _read_cached_csv(primary: Path, fallback: Optional[Path] = None) -> tuple[pd.DataFrame, Path]:
+    path = _existing_offline_file(primary, fallback)
+    token = f"{path}:{path.stat().st_mtime_ns}:{path.stat().st_size}"
+    cached = _offline_table_cache.get(str(path))
+    if isinstance(cached, dict) and cached.get("token") == token:
+        return cached["df"], path
+    df, _ = _read_offline_csv(path)
+    _offline_table_cache[str(path)] = {"token": token, "df": df}
+    return df, path
 
 
 def _read_offline_json(primary: Path, fallback: Optional[Path] = None) -> tuple[Optional[dict], Optional[Path]]:
@@ -120,6 +147,31 @@ def _first_profile_row(df: pd.DataFrame, id_column: str, id_value: int, artifact
     return _json_safe_records(matched.head(1))[0]
 
 
+def _optional_recipe_detail(movie_id: int) -> dict:
+    if not OFFLINE_RECIPE_DETAIL_PATH.exists():
+        return {}
+    if movie_id in _recipe_detail_row_cache:
+        return _recipe_detail_row_cache[movie_id]
+    try:
+        usecols = pd.read_csv(OFFLINE_RECIPE_DETAIL_PATH, nrows=0).columns.tolist()
+        for chunk in pd.read_csv(OFFLINE_RECIPE_DETAIL_PATH, chunksize=50_000, usecols=usecols):
+            if "recipe_id" not in chunk.columns:
+                raise HTTPException(status_code=500, detail=f"{OFFLINE_RECIPE_DETAIL_PATH.name} missing recipe_id")
+            ids = pd.to_numeric(chunk["recipe_id"], errors="coerce")
+            matched = chunk[ids == movie_id]
+            if not matched.empty:
+                detail = _json_safe_records(matched.head(1))[0]
+                _recipe_detail_row_cache[movie_id] = detail
+                return detail
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Failed to read recipe detail row %s: %s", movie_id, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to read recipe detail metadata") from exc
+    _recipe_detail_row_cache[movie_id] = {}
+    return {}
+
+
 def get_metadata_cache_token(state: "AppState") -> str:
     if state.pipeline and hasattr(state.pipeline, "metadata_cache_token"):
         return state.pipeline.metadata_cache_token()
@@ -131,12 +183,19 @@ def build_movie_item(movie_id: int, title: str, score: float, info: Optional[dic
     info = info or {}
     return MovieItem(
         movie_id=int(movie_id),
-        title=info.get("title", title),
+        title=info.get("title") or info.get("movie_title") or info.get("name") or title,
         score=float(score),
-        genres=info.get("genres", ""),
+        genres=info.get("genres") or info.get("movie_genres") or "",
+        avg_rating=_row_float(info, "rating_value", "avg_rating", "movie_avg_rating", default=0.0),
+        rating_count=_row_int(info, "review_count", "rating_count", "movie_rating_count", default=0),
+        review_count=_row_int(info, "review_count", "rating_count", "movie_rating_count", default=0),
+        image_url=info.get("image_url") or "",
+        ready_in_display=info.get("ready_in_display") or "",
+        recipe_yield_raw=info.get("recipe_yield_raw") or "",
+        author_name=info.get("author_name") or "",
         poster_url=info.get("poster_url", ""),
         backdrop_url=info.get("backdrop_url", ""),
-        overview=info.get("overview", ""),
+        overview=info.get("overview") or info.get("description") or "",
         release_date=info.get("release_date", ""),
         runtime=info.get("runtime"),
         vote_average=info.get("vote_average"),
@@ -174,6 +233,273 @@ def movie_detail_from_search_row(row, info: Optional[dict] = None) -> MovieDetai
             detail[field] = info[field]
 
     return MovieDetail(**detail)
+
+
+def _row_id(row: dict, *keys: str) -> int:
+    for key in keys:
+        value = row.get(key)
+        if value is not None and not pd.isna(value):
+            return int(float(value))
+    raise KeyError(f"Missing id from {keys}")
+
+
+def _row_float(row: dict, *keys: str, default: float = 0.0) -> float:
+    for key in keys:
+        value = row.get(key)
+        if value is not None and not pd.isna(value):
+            return float(value)
+    return default
+
+
+def _row_int(row: dict, *keys: str, default: int = 0) -> int:
+    return int(_row_float(row, *keys, default=float(default)))
+
+
+def _row_text(row: dict, *keys: str, default: str = "") -> str:
+    for key in keys:
+        value = row.get(key)
+        if value is not None and not pd.isna(value):
+            return str(value)
+    return default
+
+
+def _movie_detail_from_profile(profile: dict) -> MovieDetail:
+    """Map legacy internal movieId fields to a recipe detail response."""
+    movie_id = _row_id(profile, "movie_id", "movieId", "recipe_id", "id")
+    title = _row_text(profile, "title", "name", "clean_title", default=f"Recipe {movie_id}")
+    genres = _row_text(profile, "genres", "movie_genres")
+    avg_rating = _row_float(profile, "rating_value", "avg_rating", "movie_avg_rating")
+    rating_count = _row_int(profile, "review_count", "rating_count", "movie_rating_count")
+    popularity = _row_float(profile, "popularity_score", "movie_popularity", "popularity")
+    detail = {
+        "movie_id": movie_id,
+        "title": title,
+        "genres": genres,
+        "avg_rating": avg_rating,
+        "rating_count": rating_count,
+        "popularity_score": popularity,
+        "year": profile.get("year"),
+        "image_url": profile.get("image_url") or "",
+        "description": profile.get("description") or profile.get("overview") or "",
+        "minutes": profile.get("minutes"),
+        "ready_in_display": profile.get("ready_in_display") or "",
+        "recipe_yield_raw": profile.get("recipe_yield_raw") or "",
+        "serves_best_guess": profile.get("serves_best_guess"),
+        "author_name": profile.get("author_name") or "",
+        "source_url": profile.get("source_url") or profile.get("foodcom_url") or "",
+        "ingredients_json": profile.get("ingredients_json"),
+        "quantities_json": profile.get("quantities_json"),
+        "steps_json": profile.get("steps_json"),
+        "nutrition_json": profile.get("nutrition_json"),
+        "n_ingredients": profile.get("n_ingredients"),
+        "n_steps": profile.get("n_steps"),
+        "submitted": profile.get("submitted") or "",
+        "photo_count": profile.get("photo_count"),
+        "review_count": profile.get("review_count"),
+        "poster_url": profile.get("poster_url") or "",
+        "backdrop_url": profile.get("backdrop_url") or "",
+        "overview": profile.get("overview") or profile.get("description") or "",
+        "release_date": profile.get("release_date") or "",
+        "runtime": profile.get("runtime"),
+        "vote_average": profile.get("vote_average"),
+        "popularity": profile.get("popularity"),
+        "tmdb_id": profile.get("tmdb_id"),
+        "imdb_id": profile.get("imdb_id") or "",
+    }
+    return MovieDetail(**detail)
+
+
+def _es_repository():
+    from search.es_recipe_repository import ESRecipeRepository
+
+    return ESRecipeRepository()
+
+
+def _recipe_from_es(movie_id: int) -> dict:
+    record = _es_repository().get_recipe(movie_id)
+    return record or {}
+
+
+def _search_recipes_from_es(query: str, limit: int) -> list[dict]:
+    return _es_repository().search_recipes(query, limit)
+
+
+def _recipes_from_es(movie_ids: list[int]) -> dict[int, dict]:
+    return _es_repository().get_recipes(movie_ids)
+
+
+def _offline_profile(movie_id: int) -> dict:
+    profiles, path = _read_cached_csv(OFFLINE_MOVIE_PROFILE_PATH)
+    profile = _first_profile_row(profiles, "movieId", movie_id, path.name)
+    detail = _optional_recipe_detail(movie_id)
+    if detail:
+        profile.update({key: value for key, value in detail.items() if value is not None})
+    return profile
+
+
+def _offline_profile_without_detail(movie_id: int) -> dict:
+    profiles, path = _read_cached_csv(OFFLINE_MOVIE_PROFILE_PATH)
+    return _first_profile_row(profiles, "movieId", movie_id, path.name)
+
+
+def _load_faiss_similarity_assets() -> tuple[faiss.Index, np.ndarray, np.ndarray]:
+    """Load FAISS HNSW recipe vector assets with a lightweight process cache."""
+    required = [
+        FAISS_HNSW_SPARK_INDEX_PATH,
+        FAISS_HNSW_SPARK_IDS_PATH,
+        FAISS_SPARK_VECTORS_PATH,
+        FAISS_SPARK_VECTOR_IDS_PATH,
+    ]
+    missing = [str(path) for path in required if not path.exists()]
+    if missing:
+        raise HTTPException(status_code=404, detail=f"FAISS recipe similarity assets not found: {missing}")
+
+    token = "|".join(f"{path}:{path.stat().st_mtime_ns}:{path.stat().st_size}" for path in required)
+    if _faiss_similarity_cache.get("token") == token:
+        return (
+            _faiss_similarity_cache["index"],
+            _faiss_similarity_cache["index_ids"],
+            _faiss_similarity_cache["vectors"],
+        )
+
+    try:
+        index = faiss.read_index(str(FAISS_HNSW_SPARK_INDEX_PATH))
+        index_ids = np.load(FAISS_HNSW_SPARK_IDS_PATH).astype(np.int64)
+        vector_ids = np.load(FAISS_SPARK_VECTOR_IDS_PATH).astype(np.int64)
+        vectors = np.load(FAISS_SPARK_VECTORS_PATH).astype(np.float32)
+    except Exception as exc:
+        logger.error("Failed to load FAISS recipe similarity assets: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to load FAISS recipe similarity assets") from exc
+
+    if vectors.ndim != 2 or index_ids.ndim != 1 or vector_ids.ndim != 1:
+        raise HTTPException(status_code=500, detail="Invalid FAISS recipe similarity asset shape")
+    if len(index_ids) != index.ntotal or len(vector_ids) != len(vectors):
+        raise HTTPException(status_code=500, detail="FAISS recipe similarity assets are out of sync")
+
+    order = np.argsort(vector_ids)
+    vector_ids_sorted = vector_ids[order]
+    vectors_sorted = np.ascontiguousarray(vectors[order], dtype=np.float32)
+    _faiss_similarity_cache.clear()
+    _faiss_similarity_cache.update(
+        {
+            "token": token,
+            "index": index,
+            "index_ids": index_ids,
+            "vectors": vectors_sorted,
+            "vector_ids": vector_ids_sorted,
+        }
+    )
+    return index, index_ids, vectors_sorted
+
+
+def _recipe_query_vector(movie_id: int) -> np.ndarray:
+    if "vector_ids" not in _faiss_similarity_cache:
+        _load_faiss_similarity_assets()
+    vector_ids = _faiss_similarity_cache["vector_ids"]
+    vectors = _faiss_similarity_cache["vectors"]
+    pos = np.searchsorted(vector_ids, movie_id)
+    if pos >= len(vector_ids) or int(vector_ids[pos]) != movie_id:
+        raise HTTPException(status_code=404, detail=f"Recipe {movie_id} has no FAISS vector")
+    return np.ascontiguousarray(vectors[pos : pos + 1], dtype=np.float32)
+
+
+def _similar_recipe_items(movie_id: int, limit: int) -> tuple[list[MovieItem], str]:
+    index, index_ids, _ = _load_faiss_similarity_assets()
+    query = _recipe_query_vector(movie_id)
+    search_k = min(max(limit + 8, limit * 3), max(int(index.ntotal), limit + 1))
+    try:
+        scores, positions = index.search(query, search_k)
+    except Exception as exc:
+        logger.error("FAISS recipe similarity search failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="FAISS recipe similarity search failed") from exc
+
+    candidate_scores: list[tuple[int, float]] = []
+    for score, pos in zip(scores[0], positions[0]):
+        if int(pos) < 0 or int(pos) >= len(index_ids):
+            continue
+        candidate_id = int(index_ids[int(pos)])
+        if candidate_id == movie_id:
+            continue
+        candidate_scores.append((candidate_id, float(score)))
+        if len(candidate_scores) >= limit:
+            break
+
+    es_records = _recipes_from_es([candidate_id for candidate_id, _ in candidate_scores])
+    items: list[MovieItem] = []
+    for candidate_id, score in candidate_scores:
+        try:
+            profile = es_records.get(candidate_id) or _offline_profile_without_detail(candidate_id)
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                continue
+            raise
+        items.append(build_movie_item(candidate_id, f"Recipe {candidate_id}", score, profile))
+        if len(items) >= limit:
+            break
+    return items, _display_path(FAISS_HNSW_SPARK_INDEX_PATH)
+
+
+def _popular_recipe_records(limit: int, with_images_first: bool = True) -> tuple[list[dict], Path]:
+    profiles, path = _read_offline_csv(OFFLINE_MOVIE_PROFILE_PATH)
+    _require_columns(profiles, {"movieId", "title", "genres", "movie_avg_rating", "movie_rating_count"}, path.name)
+
+    df = profiles.copy()
+    df["movieId"] = pd.to_numeric(df["movieId"], errors="coerce")
+    df["movie_avg_rating"] = pd.to_numeric(df["movie_avg_rating"], errors="coerce").fillna(0.0)
+    df["movie_rating_count"] = pd.to_numeric(df["movie_rating_count"], errors="coerce").fillna(0.0)
+    if "movie_popularity" in df.columns:
+        df["movie_popularity"] = pd.to_numeric(df["movie_popularity"], errors="coerce").fillna(0.0)
+    else:
+        df["movie_popularity"] = df["movie_avg_rating"] * (df["movie_rating_count"] + 1).pow(0.5)
+    if "image_url" not in df.columns:
+        df["image_url"] = ""
+    df["has_display_image"] = df["image_url"].fillna("").astype(str).str.len() > 0
+    sort_columns = ["movie_popularity", "movie_avg_rating", "movie_rating_count", "movieId"]
+    ascending = [False, False, False, True]
+    if with_images_first:
+        sort_columns = ["has_display_image", *sort_columns]
+        ascending = [False, *ascending]
+    df = df.dropna(subset=["movieId"]).sort_values(sort_columns, ascending=ascending).head(limit)
+
+    records = []
+    for record in _json_safe_records(df):
+        records.append(
+            {
+                "movie_id": int(record.get("movieId")),
+                "title": record.get("title") or record.get("clean_title") or "",
+                "genres": record.get("genres") or "",
+                "score": record.get("movie_popularity") or 0.0,
+                "avg_rating": record.get("rating_value") or record.get("movie_avg_rating") or 0.0,
+                "rating_count": record.get("movie_rating_count") or 0,
+                "year": record.get("year"),
+                "image_url": record.get("image_url") or "",
+                "ready_in_display": record.get("ready_in_display") or "",
+                "recipe_yield_raw": record.get("recipe_yield_raw") or "",
+                "author_name": record.get("author_name") or "",
+                "review_count": record.get("review_count"),
+            }
+        )
+    return records, path
+
+
+def _record_exposures(state, user_id: int, items: list[MovieItem], request_id: str, group_name: str) -> None:
+    if state.feedback_service is None or not hasattr(state.feedback_service, "record_exposure"):
+        return
+    for index, item in enumerate(items, start=1):
+        try:
+            state.feedback_service.record_exposure(
+                user_id=user_id,
+                movie_id=item.movie_id,
+                request_id=request_id,
+                run_id=group_name,
+                experiment_name="recipe_recall_rank_v1",
+                group_name=group_name,
+                rank_position=index,
+                score=item.score,
+                reason="served_from_offline_recipe_recommendations",
+            )
+        except Exception:
+            logger.exception("Failed to record exposure for user=%s recipe=%s", user_id, item.movie_id)
 
 
 # ---------- Application state dependency ----------
@@ -223,6 +549,7 @@ async def health(state: AppState = Depends(get_state)):
 
 # ---------- Recommendation ----------
 
+@router.get("/recipes/recommend/{user_id}", response_model=RecommendationResponse)
 @router.get("/recommend/{user_id}", response_model=RecommendationResponse)
 async def recommend(
     user_id: int,
@@ -231,49 +558,57 @@ async def recommend(
     state: AppState = Depends(get_state),
 ):
     """
-    Get personalized movie recommendations for a user.
+    Get personalized recipe recommendations from precomputed offline artifacts.
 
-    Flow: Cache Check → Recall (FAISS HNSW) → Rank (XGBoost) → Response
+    The legacy /recommend path is kept for compatibility. New callers can use
+    /recipes/recommend/{user_id}.
     """
-    if state.recall_service is None or state.ranking_service is None:
-        raise HTTPException(status_code=503, detail="Services not initialized")
-
     t0 = time.perf_counter()
-    cached = False
+    if use_cache and state.cache:
+        from feedback.realtime_recommender import RealtimeRecipeRecommender
 
-    # 1. Check cache
-    metadata_token = get_metadata_cache_token(state)
-    cache_key = f"rec:user:{user_id}:k:{top_k}:{metadata_token}"
+        realtime_cache_key = RealtimeRecipeRecommender.cache_key(user_id, top_k)
+        realtime_result = state.cache.get_json(realtime_cache_key)
+        if realtime_result is not None:
+            elapsed = (time.perf_counter() - t0) * 1000
+            realtime_result["cached"] = True
+            realtime_result["took_ms"] = round(elapsed, 2)
+            return RecommendationResponse(**realtime_result)
+
+    cache_key = f"recipe:offline_rec:user:{user_id}:k:{top_k}"
     if use_cache and state.cache:
         cached_result = state.cache.get_json(cache_key)
         if cached_result is not None:
             elapsed = (time.perf_counter() - t0) * 1000
             cached_result["cached"] = True
             cached_result["took_ms"] = round(elapsed, 2)
-            if all("poster_url" in item for item in cached_result.get("recommendations", [])):
-                return cached_result
-            logger.info("Ignoring stale recommendation cache without movie metadata fields")
+            return RecommendationResponse(**cached_result)
 
-    # 2. Recall
-    candidates = state.recall_service.recall(user_id)
-    if not candidates:
-        # Fallback to popular
-        popular = state.pipeline.get_popular_movies(top_k)
+    try:
+        df, path = _read_offline_csv(OFFLINE_RECOMMENDATIONS_PATH)
+        _require_columns(df, {"userId", "movieId"}, path.name)
+        df["userId"] = pd.to_numeric(df["userId"], errors="coerce")
+        user_recs = df[df["userId"] == user_id].copy()
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+        user_recs = pd.DataFrame()
+
+    items: list[MovieItem] = []
+    if not user_recs.empty:
+        if "rank_position" in user_recs.columns:
+            user_recs["_rank_position"] = pd.to_numeric(user_recs["rank_position"], errors="coerce").fillna(10**9)
+            user_recs = user_recs.sort_values(["_rank_position", "movieId"], ascending=[True, True])
+        for record in _json_safe_records(user_recs.head(top_k)):
+            recipe_id = int(record["movieId"])
+            score = _row_float(record, "rank_score", "mmr_score", "recall_score", default=0.0)
+            items.append(build_movie_item(recipe_id, f"Recipe {recipe_id}", score, record))
+    else:
+        popular_records, _ = _popular_recipe_records(top_k)
         items = [
-            build_movie_item(m["movie_id"], m["title"], m.get("popularity_score", 0.0), m)
-            for m in popular[:top_k]
+            build_movie_item(record["movie_id"], record["title"], float(record.get("score") or 0.0), record)
+            for record in popular_records
         ]
-        elapsed = (time.perf_counter() - t0) * 1000
-        return RecommendationResponse(user_id=user_id, recommendations=items, took_ms=round(elapsed, 2))
-
-    # 3. Rank
-    ranked = state.ranking_service.rank(user_id, candidates, top_k)
-
-    # 4. Build response with movie titles
-    items = []
-    for r in ranked[:top_k]:
-        info = state.pipeline.get_movie_info(r["movie_id"])
-        items.append(build_movie_item(r["movie_id"], f"Movie {r['movie_id']}", r["score"], info))
 
     elapsed = (time.perf_counter() - t0) * 1000
     result = RecommendationResponse(
@@ -283,12 +618,21 @@ async def recommend(
         took_ms=round(elapsed, 2),
     )
 
-    # 5. Write cache
     if use_cache and state.cache:
         state.cache.set_json(cache_key, result.model_dump(), ttl=state.cache.settings.redis_ttl_recommend)
 
-    return result
+    if state.ab_service is None:
+        from experiment.ab_service import ABService
 
+        state.ab_service = ABService(cache=state.cache)
+    if state.feedback_service is None:
+        from feedback.feedback_service import FeedbackService
+
+        state.feedback_service = FeedbackService(cache=state.cache)
+    group = state.ab_service.assign_group(user_id, "recipe_recall_rank_v1")["group_name"]
+    _record_exposures(state, user_id, items, request_id=f"offline-{user_id}-{int(time.time() * 1000)}", group_name=group)
+
+    return result
 
 # ---------- Offline Display APIs ----------
 
@@ -415,8 +759,11 @@ async def offline_user_profile(user_id: int):
 @router.get("/offline/movie-profile/{movie_id}", response_model=OfflineMovieProfileResponse)
 async def offline_movie_profile(movie_id: int):
     """Read a Spark-built offline movie profile for display only."""
-    profiles, path = _read_offline_csv(OFFLINE_MOVIE_PROFILE_PATH)
+    profiles, path = _read_cached_csv(OFFLINE_MOVIE_PROFILE_PATH)
     profile = _first_profile_row(profiles, "movieId", movie_id, path.name)
+    detail = _optional_recipe_detail(movie_id)
+    if detail:
+        profile.update({key: value for key, value in detail.items() if value is not None})
     return OfflineMovieProfileResponse(
         movie_id=movie_id,
         profile=profile,
@@ -424,69 +771,96 @@ async def offline_movie_profile(movie_id: int):
     )
 
 
-# ---------- Popular Movies ----------
+@router.get("/offline/popular-recipes", response_model=OfflinePopularRecipesResponse)
+async def offline_popular_recipes(
+    limit: int = Query(default=20, ge=1, le=100),
+    with_images_first: bool = Query(default=True, description="Prefer recipes with image_url for display."),
+):
+    """Read popular recipe profiles from offline recipe artifacts."""
+    records, path = _popular_recipe_records(limit, with_images_first)
+    return OfflinePopularRecipesResponse(
+        popular=records,
+        total=int(len(records)),
+        source=_display_path(path),
+    )
 
+# ---------- Popular Recipes ----------
+
+@router.get("/recipes/popular", response_model=PopularResponse)
 @router.get("/popular", response_model=PopularResponse)
 async def popular(
     limit: int = Query(default=50, ge=1, le=200),
     state: AppState = Depends(get_state),
 ):
-    """Get global popular movies list."""
-    if state.pipeline is None:
-        raise HTTPException(status_code=503, detail="Services not initialized")
-
+    """Get global popular recipes from offline recipe profiles."""
     t0 = time.perf_counter()
-
-    metadata_token = get_metadata_cache_token(state)
-    cache_key = f"popular:{limit}:{metadata_token}"
+    cache_key = f"recipe:popular:{limit}"
     if state.cache:
         cached = state.cache.get_json(cache_key)
         if cached:
             elapsed = (time.perf_counter() - t0) * 1000
-            if all("poster_url" in item for item in cached):
-                return PopularResponse(popular=cached, took_ms=round(elapsed, 2))
-            logger.info("Ignoring stale popular cache without movie metadata fields")
+            return PopularResponse(popular=cached, took_ms=round(elapsed, 2))
 
-    movies = state.pipeline.get_popular_movies(limit)
-    items = [MovieDetail(**m) for m in movies]
-
+    records, _ = _popular_recipe_records(limit)
+    items = [_movie_detail_from_profile(record) for record in records]
     elapsed = (time.perf_counter() - t0) * 1000
 
     if state.cache:
-        state.cache.set_json(cache_key, [m.model_dump() for m in items],
-                             ttl=state.cache.settings.redis_ttl_popular)
+        state.cache.set_json(cache_key, [m.model_dump() for m in items], ttl=state.cache.settings.redis_ttl_popular)
 
     return PopularResponse(popular=items, took_ms=round(elapsed, 2))
 
+# ---------- Recipe Detail ----------
 
-# ---------- Movie Detail ----------
-
+@router.get("/recipe/{movie_id}", response_model=MovieDetail)
 @router.get("/movie/{movie_id}", response_model=MovieDetail)
 async def movie_detail(
     movie_id: int,
     state: AppState = Depends(get_state),
 ):
-    """Get detailed information about a specific movie."""
-    if state.pipeline is None:
-        raise HTTPException(status_code=503, detail="Services not initialized")
-
-    metadata_token = get_metadata_cache_token(state)
-    cache_key = f"movie:{movie_id}:{metadata_token}"
+    """Get detailed information about a specific recipe."""
+    cache_key = f"recipe:detail:{movie_id}"
     if state.cache:
         cached = state.cache.get_json(cache_key)
         if cached:
-            if "poster_url" in cached:
-                return MovieDetail(**cached)
-            logger.info("Ignoring stale movie cache without movie metadata fields")
+            return MovieDetail(**cached)
 
-    info = state.pipeline.get_movie_info(movie_id)
-    if not info:
-        raise HTTPException(status_code=404, detail=f"Movie {movie_id} not found")
-
+    try:
+        info = _recipe_from_es(movie_id) or _offline_profile(movie_id)
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            raise HTTPException(status_code=404, detail=f"Recipe {movie_id} not found") from exc
+        raise
+    detail = _movie_detail_from_profile(info)
     if state.cache:
-        state.cache.set_json(cache_key, info, ttl=3600)
+        state.cache.set_json(cache_key, detail.model_dump(), ttl=3600)
 
-    return MovieDetail(**info)
+    return detail
+
+
+@router.get("/recipe/{movie_id}/similar", response_model=SimilarRecipesResponse)
+@router.get("/movie/{movie_id}/similar", response_model=SimilarRecipesResponse)
+async def similar_recipes(
+    movie_id: int,
+    limit: int = Query(default=8, ge=1, le=30),
+):
+    """Find similar recipes by querying the FAISS HNSW index with ALS embeddings."""
+    items, source = _similar_recipe_items(movie_id, limit)
+    return SimilarRecipesResponse(
+        movie_id=movie_id,
+        similar=items,
+        total=len(items),
+        source=source,
+    )
+
+
+@router.post("/recipes/cold-start", response_model=ColdStartResponse)
+async def cold_start_recipes(payload: ColdStartRequest):
+    """Recommend recipes from explicit new-user preferences."""
+    from recommendation.cold_start import cold_start_recommend
+
+    result = cold_start_recommend(**payload.model_dump())
+    return ColdStartResponse(**result)
 
 
 # ---------- User Profile ----------
@@ -539,30 +913,42 @@ async def submit_feedback(payload: FeedbackRequest, state: AppState = Depends(ge
     return FeedbackResponse(status="ok", **result)
 
 
+@router.post("/recommendation-exposure", response_model=dict)
+async def submit_recommendation_exposure(payload: ExposureRequest, state: AppState = Depends(get_state)):
+    """Persist a recommendation exposure event for CTR and A/B metrics."""
+    if state.feedback_service is None:
+        from feedback.feedback_service import FeedbackService
+
+        state.feedback_service = FeedbackService(cache=state.cache)
+    result = state.feedback_service.record_exposure(**payload.model_dump())
+    return {"status": "ok", **result}
+
+
 # ---------- Search ----------
 
+@router.get("/recipes/search", response_model=SearchResponse)
 @router.get("/search", response_model=SearchResponse)
 async def search(
     q: str = Query(..., min_length=1, description="Search query"),
     limit: int = Query(default=20, ge=1, le=100),
     state: AppState = Depends(get_state),
 ):
-    """Search movies by title (simple substring match)."""
-    if state.pipeline is None:
-        raise HTTPException(status_code=503, detail="Services not initialized")
-
+    """Search recipes by title, tags, author, or description."""
     query = q.lower()
-    movies = state.pipeline.movies
-    mask = movies["title"].str.lower().str.contains(query, na=False)
-    matched = movies[mask].head(limit)
+    es_records = _search_recipes_from_es(query, limit)
+    if es_records:
+        results = [_movie_detail_from_profile(record) for record in es_records]
+        return SearchResponse(results=results, total=len(results))
 
-    results = []
-    for _, row in matched.iterrows():
-        info = state.pipeline.get_movie_info(int(row["movieId"]))
-        results.append(movie_detail_from_search_row(row, info))
+    profiles, path = _read_cached_csv(OFFLINE_MOVIE_PROFILE_PATH)
+    _require_columns(profiles, {"movieId", "title"}, path.name)
+    searchable = profiles.copy()
+    text_columns = [col for col in ["title", "clean_title", "genres", "description", "author_name"] if col in searchable]
+    combined = searchable[text_columns].fillna("").astype(str).agg(" ".join, axis=1).str.lower()
+    matched = searchable[combined.str.contains(query, regex=False, na=False)].head(limit)
+    results = [_movie_detail_from_profile(record) for record in _json_safe_records(matched)]
 
     return SearchResponse(results=results, total=len(results))
-
 
 # ---------- Rebuild Index ----------
 
@@ -571,49 +957,20 @@ async def rebuild_index(
     state: AppState = Depends(get_state),
 ):
     """
-    Rebuild the FAISS HNSW index and retrain embeddings.
+    Compatibility endpoint for the former online index rebuild.
 
-    This is a long-running operation that reloads data, retrains MF,
-    rebuilds the FAISS index, and clears relevant caches.
+    Recipe artifacts are rebuilt by scripts/run_recipe_pipeline.py and the
+    LightGCN recall stage; this endpoint only clears serving caches.
     """
-    if state.pipeline is None:
-        raise HTTPException(status_code=503, detail="Services not initialized")
-    if state.embedding_service is None or state.faiss_index is None:
-        logger.warning("Index rebuild skipped because embedding or FAISS service is not initialized")
-        return RebuildResponse(
-            status="success",
-            message="Index rebuild skipped: services not initialized",
-            took_seconds=0.0,
-        )
-
-    try:
-        t0 = time.perf_counter()
-
-        # Clear caches
-        if state.cache:
-            state.cache.delete_pattern("rec:*")
-            state.cache.delete_pattern("topk:*")
-            logger.info("Cleared recommendation caches")
-
-        # Rebuild embeddings
-        state.embedding_service.train(state.pipeline)
-        state.embedding_service.save()
-
-        # Rebuild FAISS index
-        state.faiss_index.build(
-            state.embedding_service.item_embeddings,
-            state.pipeline.movie_ids,
-        )
-
-        elapsed = time.perf_counter() - t0
-        logger.info(f"Index rebuild complete in {elapsed:.1f}s")
-
-        return RebuildResponse(
-            status="success",
-            message=f"Index rebuilt: {state.faiss_index.ntotal} vectors",
-            took_seconds=round(elapsed, 2),
-        )
-
-    except Exception as e:
-        logger.error(f"Rebuild failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    t0 = time.perf_counter()
+    if state.cache:
+        state.cache.delete_pattern("recipe:*")
+        state.cache.delete_pattern("rec:*")
+        state.cache.delete_pattern("topk:*")
+        logger.info("Cleared recipe recommendation caches")
+    elapsed = time.perf_counter() - t0
+    return RebuildResponse(
+        status="success",
+        message="Recipe serving caches cleared. Rebuild offline artifacts with scripts/run_recipe_pipeline.py.",
+        took_seconds=round(elapsed, 2),
+    )

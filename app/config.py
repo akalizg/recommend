@@ -13,7 +13,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 class Settings(BaseSettings):
     # Application
-    app_name: str = "MovieLensRecommend"
+    app_name: str = "RecipeRecommend"
     app_version: str = "1.0.0"
     debug: bool = True
     log_level: str = "INFO"
@@ -62,8 +62,46 @@ class Settings(BaseSettings):
     # Data
     movielens_data_dir: str = str(PROJECT_ROOT / "data" / "ml-latest-small")
     movielens_url: str = "https://files.grouplens.org/datasets/movielens/ml-latest-small.zip"
+    foodcom_data_dir: str = str(PROJECT_ROOT / "data" / "food-com")
+    canonical_data_dir: str = str(PROJECT_ROOT / "data" / "recipe-canonical")
     tmdb_api_key: str = ""
     recommendation_db_path: str = str(PROJECT_ROOT / "data" / "recommendations.db")
+
+    # Elasticsearch
+    elasticsearch_url: str = "http://localhost:9200"
+    elasticsearch_index_recipes: str = "recipes"
+    elasticsearch_enabled: bool = True
+    elasticsearch_timeout_seconds: float = 2.0
+
+    # Spark
+    spark_master_url: str = "spark://192.168.88.161:7077"
+    spark_driver_memory: str = "1g"
+    spark_executor_memory: str = "1g"
+    spark_executor_cores: str = "1"
+    spark_executor_instances: str = "3"
+    spark_sql_shuffle_partitions: int = 12
+    spark_default_parallelism: int = 12
+    spark_ui_show_console_progress: bool = False
+
+    # Kafka
+    kafka_enabled: bool = True
+    kafka_bootstrap_servers: str = "node1:9092"
+    kafka_feedback_topic: str = "recipe_feedback"
+    kafka_realtime_recommend_topic: str = "recipe_realtime_recommend"
+    kafka_client_id: str = "reciperec-api"
+    kafka_consumer_group: str = "reciperec-feedback-consumer"
+    kafka_request_timeout_ms: int = 3000
+
+    # MinIO artifact storage
+    minio_enabled: bool = True
+    minio_endpoint: str = "localhost:9000"
+    minio_access_key: str = "minioadmin"
+    minio_secret_key: str = "minioadmin"
+    minio_secure: bool = False
+    minio_bucket: str = "reciperec"
+    minio_artifact_prefix: str = "offline/latest"
+    minio_connect_timeout_seconds: float = 3.0
+    minio_read_timeout_seconds: float = 10.0
 
     # Recommendation
     recall_top_k: int = 200

@@ -2,8 +2,8 @@
 Run the Spark recall stage:
 1. Build standalone FAISS index from Spark ALS vectors.
 2. Build ItemCF recall candidates.
-3. Build lightweight LightGCN, content, and hot recall candidates.
-4. Merge ALS, ItemCF, LightGCN, content, and hot recall candidates.
+3. Build FAISS HNSW, LightGCN, content, and hot recall candidates.
+4. Merge ALS, ItemCF, FAISS HNSW, LightGCN, content, and hot recall candidates.
 
 This script does not modify the current online recommendation chain.
 """
@@ -81,6 +81,33 @@ def main() -> None:
     )
 
     run_step(
+        "Build FAISS HNSW embedding recall",
+        [
+            python,
+            "spark_jobs/spark_faiss_hnsw_recall.py",
+            "--train",
+            "data/processed/train_ratings.csv",
+            "--index",
+            "models/faiss_hnsw_spark.index",
+            "--index-ids",
+            "models/faiss_hnsw_spark_ids.npy",
+            "--vectors",
+            "data/faiss/movie_vectors.npy",
+            "--vector-ids",
+            "data/faiss/movie_ids.npy",
+            "--output",
+            "data/recall/faiss_hnsw_recall.csv",
+            "--top-n",
+            "50",
+            "--search-k",
+            "200",
+            "--min-rating",
+            "4.0",
+        ],
+        required=True,
+    )
+
+    run_step(
         "Export LightGCN graph",
         [
             python,
@@ -96,20 +123,30 @@ def main() -> None:
     )
 
     run_step(
-        "Build lightweight LightGCN recall",
+        "Train PyTorch LightGCN recall",
         [
             python,
             "spark_jobs/spark_lightgcn_recall.py",
-            "--user-profile",
-            "data/features/user_profile.csv",
             "--movie-profile",
             "data/features/movie_profile.csv",
             "--train",
             "data/processed/train_ratings.csv",
             "--output",
             "data/recall/lightgcn_recall.csv",
+            "--embedding-dir",
+            "data/lightgcn",
             "--top-n",
             "50",
+            "--embedding-dim",
+            "32",
+            "--layers",
+            "2",
+            "--epochs",
+            "5",
+            "--batch-size",
+            "4096",
+            "--device",
+            "auto",
         ],
         required=True,
     )
@@ -161,6 +198,8 @@ def main() -> None:
             "data/recall/als_recall.csv",
             "--itemcf",
             "data/recall/itemcf_recall.csv",
+            "--embedding",
+            "data/recall/faiss_hnsw_recall.csv",
             "--lightgcn",
             "data/recall/lightgcn_recall.csv",
             "--content",
@@ -180,6 +219,7 @@ def main() -> None:
         "models/faiss_hnsw_spark.index",
         "models/faiss_hnsw_spark_ids.npy",
         "data/recall/itemcf_recall.csv",
+        "data/recall/faiss_hnsw_recall.csv",
         "data/lightgcn/graph_edges.csv",
         "data/recall/lightgcn_recall.csv",
         "data/recall/content_recall.csv",

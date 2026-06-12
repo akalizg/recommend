@@ -14,8 +14,8 @@ class MockPipeline:
     def get_movie_info(self, movie_id):
         return {
             "movie_id": movie_id,
-            "title": f"Test Movie {movie_id}",
-            "genres": "Action|Comedy",
+            "title": f"Test Recipe {movie_id}",
+            "genres": "Dinner|Quick",
             "avg_rating": 3.5,
             "rating_count": 100,
             "popularity_score": 4.0,
@@ -34,8 +34,8 @@ class MockPipeline:
         import pandas as pd
         return pd.DataFrame({
             "movieId": [1, 2, 3],
-            "title": ["Toy Story (1995)", "Jumanji (1995)", "Test Movie (2000)"],
-            "genres": ["Animation|Comedy", "Adventure|Fantasy", "Action"],
+            "title": ["Chicken Soup", "Apple Pie", "Test Recipe"],
+            "genres": ["Soup|Dinner", "Dessert|Baking", "Quick"],
             "avg_rating": [4.0, 3.5, 3.0],
             "rating_count": [200, 150, 100],
             "popularity_score": [4.5, 4.0, 3.5],
@@ -81,6 +81,7 @@ class MockUserProfileBuilder:
 class MockFeedbackService:
     def __init__(self):
         self.profile = None
+        self.exposures = []
 
     def record_feedback(self, **kwargs):
         self.profile = {
@@ -101,11 +102,67 @@ class MockFeedbackService:
     def get_realtime_profile(self, user_id):
         return self.profile
 
+    def record_exposure(self, **kwargs):
+        self.exposures.append(kwargs)
+        return {
+            "event_id": len(self.exposures),
+            "user_id": kwargs["user_id"],
+            "movie_id": kwargs["movie_id"],
+            "event_type": "exposure",
+            "created_at": "2026-01-01T00:00:00+00:00",
+        }
+
+
+class MockABService:
+    def assign_group(self, user_id, experiment_name="recall_rank_v1"):
+        return {"experiment_name": experiment_name, "group_name": "A"}
+
+    def metrics(self, experiment_name="recall_rank_v1"):
+        return {"experiment_name": experiment_name, "groups": [{"group_name": "A", "events": 1}]}
+
 
 @pytest.fixture
-def client():
+def client(tmp_path, monkeypatch):
     from app.main import create_app
+    from api import routes
     from api.routes import _app_state
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "elasticsearch_enabled", False)
+    recs = tmp_path / "recommendations_with_reasons.csv"
+    recs.write_text(
+        "userId,movieId,rank_position,rank_score,mmr_score,movie_title,movie_genres,"
+        "favorite_genres,final_reason,reason_source,reason_evidence,image_url,ready_in_display,"
+        "recipe_yield_raw,author_name\n"
+        "1,10,1,0.9,0.8,Chicken Soup,Soup|Dinner,Dinner,Good match,template,"
+        "\"{\"\"rank_position\"\": 1}\",https://example.com/soup.jpg,30 mins,4 servings,Chef A\n"
+        "1,11,2,0.8,0.7,Apple Pie,Dessert|Baking,Dessert,Sweet match,template,"
+        "\"{\"\"rank_position\"\": 2}\",https://example.com/pie.jpg,60 mins,8 servings,Chef B\n",
+        encoding="utf-8",
+    )
+    movies = tmp_path / "movie_profile.csv"
+    movies.write_text(
+        "movieId,title,clean_title,genres,movie_avg_rating,movie_rating_count,movie_popularity,"
+        "image_url,ready_in_display,recipe_yield_raw,author_name,description\n"
+        "10,Chicken Soup,Chicken Soup,Soup|Dinner,4.1,200,90,https://example.com/soup.jpg,"
+        "30 mins,4 servings,Chef A,Cozy chicken soup\n"
+        "11,Apple Pie,Apple Pie,Dessert|Baking,4.4,150,80,https://example.com/pie.jpg,"
+        "60 mins,8 servings,Chef B,Classic apple pie\n"
+        "12,Chicken Stew,Chicken Stew,Stew|Dinner,4.2,120,70,https://example.com/stew.jpg,"
+        "45 mins,6 servings,Chef C,Rich chicken stew\n",
+        encoding="utf-8",
+    )
+    detail = tmp_path / "recipe_detail_metadata.csv"
+    detail.write_text(
+        "recipe_id,ingredients_json,quantities_json,steps_json,nutrition_json,source_url\n"
+        "10,\"[\"\"chicken\"\"]\",\"[\"\"1 lb\"\"]\",\"[\"\"Simmer\"\"]\",\"{\"\"calories\"\": 250}\","
+        "https://www.food.com/recipe/chicken-soup-10\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(routes, "OFFLINE_RECOMMENDATIONS_PATH", recs)
+    monkeypatch.setattr(routes, "OFFLINE_MOVIE_PROFILE_PATH", movies)
+    monkeypatch.setattr(routes, "OFFLINE_RECIPE_DETAIL_PATH", detail)
+    routes._faiss_similarity_cache.clear()
 
     # Wire mock services
     _app_state.pipeline = MockPipeline()
@@ -116,6 +173,7 @@ def client():
     _app_state.faiss_index = None
     _app_state.embedding_service = None
     _app_state.feedback_service = MockFeedbackService()
+    _app_state.ab_service = MockABService()
 
     app = create_app()
     return TestClient(app)
@@ -134,8 +192,8 @@ class TestAPIEndpoints:
         assert resp.status_code == 200
         data = resp.json()
         assert data["user_id"] == 1
-        assert len(data["recommendations"]) == 3
-        assert data["recommendations"][0]["movie_id"] == 1
+        assert len(data["recommendations"]) == 2
+        assert data["recommendations"][0]["movie_id"] == 10
         assert "took_ms" in data
 
     def test_recommend_with_topk(self, client):
@@ -144,22 +202,94 @@ class TestAPIEndpoints:
         data = resp.json()
         assert len(data["recommendations"]) == 2
 
+    def test_recommend_prefers_realtime_cache(self, client):
+        from api.routes import _app_state
+
+        class LocalCache:
+            settings = type("Settings", (), {"redis_ttl_recommend": 600})()
+
+            def get_json(self, key):
+                if key == "recipe:realtime_rec:user:1:k:2":
+                    return {
+                        "user_id": 1,
+                        "recommendations": [
+                            {
+                                "movie_id": 99,
+                                "title": "Realtime Soup",
+                                "score": 1.23,
+                                "genres": "Soup",
+                            }
+                        ],
+                        "cached": False,
+                        "took_ms": 0.0,
+                        "source": "test",
+                    }
+                return None
+
+            def set_json(self, *args, **kwargs):
+                return True
+
+        _app_state.cache = LocalCache()
+        resp = client.get("/recommend/1?top_k=2")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["cached"] is True
+        assert data["recommendations"][0]["movie_id"] == 99
+
     def test_popular(self, client):
         resp = client.get("/popular?limit=10")
         assert resp.status_code == 200
         data = resp.json()
-        assert len(data["popular"]) == 10
+        assert len(data["popular"]) == 3
 
     def test_movie_detail(self, client):
-        resp = client.get("/movie/1")
+        resp = client.get("/movie/10")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["movie_id"] == 1
-        assert data["title"] == "Test Movie 1"
+        assert data["movie_id"] == 10
+        assert data["title"]
+
+    def test_similar_recipes(self, client, tmp_path, monkeypatch):
+        import faiss
+        import numpy as np
+        from api import routes
+
+        vectors = np.array(
+            [
+                [1.0, 0.0, 0.0],
+                [0.95, 0.05, 0.0],
+                [0.8, 0.2, 0.0],
+            ],
+            dtype="float32",
+        )
+        ids = np.array([10, 11, 12], dtype="int64")
+        index = faiss.IndexHNSWFlat(3, 8, faiss.METRIC_INNER_PRODUCT)
+        index.add(vectors)
+        index_path = tmp_path / "faiss.index"
+        index_ids = tmp_path / "faiss_ids.npy"
+        vector_path = tmp_path / "vectors.npy"
+        vector_ids = tmp_path / "vector_ids.npy"
+        faiss.write_index(index, str(index_path))
+        np.save(index_ids, ids)
+        np.save(vector_path, vectors)
+        np.save(vector_ids, ids)
+
+        monkeypatch.setattr(routes, "FAISS_HNSW_SPARK_INDEX_PATH", index_path)
+        monkeypatch.setattr(routes, "FAISS_HNSW_SPARK_IDS_PATH", index_ids)
+        monkeypatch.setattr(routes, "FAISS_SPARK_VECTORS_PATH", vector_path)
+        monkeypatch.setattr(routes, "FAISS_SPARK_VECTOR_IDS_PATH", vector_ids)
+        routes._faiss_similarity_cache.clear()
+
+        resp = client.get("/recipe/10/similar?limit=2")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["movie_id"] == 10
+        assert data["total"] == 2
+        assert [item["movie_id"] for item in data["similar"]] == [11, 12]
 
     def test_movie_not_found(self, client):
         resp = client.get("/movie/99999")
-        assert resp.status_code == 200  # Mock always returns data
+        assert resp.status_code == 404
 
     def test_user_profile(self, client):
         resp = client.get("/user/1/profile")
@@ -182,12 +312,25 @@ class TestAPIEndpoints:
         assert profile_resp.status_code == 200
         assert profile_resp.json()["profile"]["recent_feedback"][0]["feedback_type"] == "like"
 
+    def test_ab_and_metrics(self, client):
+        group_resp = client.get("/ab/group/1")
+        assert group_resp.status_code == 200
+        assert group_resp.json()["group_name"] == "A"
+
+        metrics_resp = client.get("/ab/metrics")
+        assert metrics_resp.status_code == 200
+        assert metrics_resp.json()["groups"][0]["group_name"] == "A"
+
+        prom_resp = client.get("/metrics")
+        assert prom_resp.status_code == 200
+        assert "reciperec_up 1" in prom_resp.text
+
     def test_search(self, client):
-        resp = client.get("/search?q=Toy")
+        resp = client.get("/search?q=Chicken")
         assert resp.status_code == 200
         data = resp.json()
         assert len(data["results"]) >= 1
-        assert data["results"][0]["title"] == "Toy Story (1995)"
+        assert "Chicken" in data["results"][0]["title"]
 
     def test_rebuild_index(self, client):
         resp = client.post("/rebuild-index")
@@ -202,7 +345,7 @@ class TestAPIEndpoints:
         recs.write_text(
             "userId,movieId,rank_position,rank_score,mmr_score,movie_title,movie_genres,"
             "favorite_genres,final_reason,reason_source,reason_evidence\n"
-            "1,10,1,0.9,0.8,Toy Story,Animation|Comedy,Comedy,Good match,template,"
+            "1,10,1,0.9,0.8,Chicken Soup,Soup|Dinner,Dinner,Good match,template,"
             "\"{\"\"rank_position\"\": 1}\"\n",
             encoding="utf-8",
         )
@@ -259,7 +402,7 @@ class TestAPIEndpoints:
         movies = tmp_path / "movie_profile.csv"
         movies.write_text(
             "movieId,title,genres,movie_avg_rating,movie_rating_count\n"
-            "10,Toy Story,Animation|Comedy,4.1,200\n",
+            "10,Chicken Soup,Soup|Dinner,4.1,200\n",
             encoding="utf-8",
         )
         monkeypatch.setattr(routes, "OFFLINE_USER_PROFILE_PATH", users)
@@ -271,4 +414,4 @@ class TestAPIEndpoints:
 
         movie_resp = client.get("/offline/movie-profile/10")
         assert movie_resp.status_code == 200
-        assert movie_resp.json()["profile"]["title"] == "Toy Story"
+        assert movie_resp.json()["profile"]["title"] == "Chicken Soup"

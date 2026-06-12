@@ -14,6 +14,11 @@ import sys
 import tempfile
 from pathlib import Path
 
+try:
+    from spark_utils import build_spark_session
+except ModuleNotFoundError:
+    from spark_jobs.spark_utils import build_spark_session
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_INPUT = PROJECT_ROOT / "data" / "processed" / "ratings_clean.csv"
@@ -49,13 +54,7 @@ def require_pyspark():
 def create_spark_session(app_name: str = "MovieRecSparkTrainTestSplit"):
     SparkSession, _, _, _ = require_pyspark()
     try:
-        return (
-            SparkSession.builder.appName(app_name)
-            .master("local[*]")
-            .config("spark.sql.session.timeZone", "UTC")
-            .config("spark.ui.showConsoleProgress", "false")
-            .getOrCreate()
-        )
+        return build_spark_session(SparkSession, app_name)
     except Exception as exc:
         raise RuntimeError(
             "Failed to start SparkSession. Please check that Java is installed and JAVA_HOME is set. "

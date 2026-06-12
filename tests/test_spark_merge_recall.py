@@ -18,10 +18,16 @@ def test_spark_merge_recall_outputs(tmp_path):
     from spark_jobs.spark_merge_recall import DEFAULT_ALS, merge_recall
 
     itemcf_output = tmp_path / "itemcf_recall.csv"
+    embedding_output = tmp_path / "faiss_hnsw_recall.csv"
     merged_output = tmp_path / "merged_recall_candidates.csv"
     build_itemcf_recall(DEFAULT_TRAIN, itemcf_output, top_sim=20, top_n=20, min_rating=4.0, max_liked_per_user=50)
-    summary = merge_recall(DEFAULT_ALS, itemcf_output, merged_output, top_n=30)
+    als = pd.read_csv(DEFAULT_ALS).head(20)
+    embedding = als[["userId", "movieId", "recall_score"]].copy()
+    embedding["recall_type"] = "embedding"
+    embedding.to_csv(embedding_output, index=False)
+    summary = merge_recall(DEFAULT_ALS, itemcf_output, merged_output, top_n=30, embedding_path=embedding_output)
     assert summary["merged_rows_after_topn"] > 0
+    assert summary["embedding_recall_rows"] > 0
     assert merged_output.exists()
 
     df = pd.read_csv(merged_output)
@@ -47,3 +53,4 @@ def test_spark_merge_recall_outputs(tmp_path):
     assert df.groupby("userId").size().max() <= 30
     assert (df["recall_source_count"] >= 1).all()
     assert df["merged_recall_score"].notna().all()
+    assert df["is_embedding_recall"].sum() > 0

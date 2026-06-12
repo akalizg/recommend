@@ -1,8 +1,8 @@
-"""
+﻿"""
 Build ablation experiment tables from offline metrics.
 
-The script summarizes ALS, ItemCF, merged recall, XGBoost ranking, and MMR
-reranking without inventing improvements that are not present in the metrics.
+The script summarizes ALS, ItemCF, merged recall, ranking model selection, and
+MMR reranking without inventing improvements that are not present in the metrics.
 """
 from __future__ import annotations
 
@@ -19,13 +19,23 @@ DEFAULT_METRICS = PROJECT_ROOT / "data" / "eval" / "offline_metrics.csv"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "data" / "eval"
 DEFAULT_K = 10
 
-VARIANT_ORDER = ["ALS", "ItemCF", "ALS+ItemCF_Merged", "XGBoost_Top50", "XGBoost_MMR_Top10"]
+VARIANT_ORDER = [
+    "ALS",
+    "ItemCF",
+    "FAISS_HNSW",
+    "Merged_Recall",
+    "XGBoost_Top50",
+    "LightGBM_Top50",
+    "LightGBM_MMR_Top10",
+]
 REMOVED_MODULES = {
-    "ALS": "ItemCF, merged recall, XGBoost ranking, MMR reranking",
-    "ItemCF": "ALS, merged recall, XGBoost ranking, MMR reranking",
-    "ALS+ItemCF_Merged": "XGBoost ranking, MMR reranking",
-    "XGBoost_Top50": "MMR reranking",
-    "XGBoost_MMR_Top10": "未移除模块",
+    "ALS": "ItemCF, FAISS_HNSW, LightGCN, content/hot recall, ranking, MMR reranking",
+    "ItemCF": "ALS, FAISS_HNSW, LightGCN, content/hot recall, ranking, MMR reranking",
+    "FAISS_HNSW": "ALS, ItemCF, LightGCN, content/hot recall, ranking, MMR reranking",
+    "Merged_Recall": "ranking, MMR reranking",
+    "XGBoost_Top50": "LightGBM model selection, MMR reranking",
+    "LightGBM_Top50": "MMR reranking",
+    "LightGBM_MMR_Top10": "No module removed; selected full offline pipeline output",
 }
 OUTPUT_COLUMNS = [
     "variant",
@@ -73,8 +83,10 @@ def _observation(metrics_at_k: pd.DataFrame, variant: str) -> str:
         return "ALS single-channel recall baseline."
     if variant == "ItemCF":
         return "ItemCF single-channel recall baseline for collaborative co-occurrence comparison."
+    if variant == "FAISS_HNSW":
+        return "FAISS HNSW embedding recall channel based on ALS recipe vectors."
 
-    if variant == "ALS+ItemCF_Merged":
+    if variant == "Merged_Recall":
         als = _get_row(metrics_at_k, "ALS")
         if als is None:
             return "Merged recall is available, but ALS baseline is missing."
@@ -83,38 +95,39 @@ def _observation(metrics_at_k: pd.DataFrame, variant: str) -> str:
             return f"Compared with ALS, merged recall improves Recall@{int(row['k'])} by {_fmt_delta(delta)}, indicating broader candidate coverage."
         return (
             f"Compared with ALS, merged recall does not improve Recall@{int(row['k'])} "
-            f"({_fmt_delta(delta)}); current candidates may be limited by sparse MovieLens small interactions."
+            f"({_fmt_delta(delta)}); current candidates may be limited by sparse Food.com interactions."
         )
 
-    if variant == "XGBoost_Top50":
-        merged = _get_row(metrics_at_k, "ALS+ItemCF_Merged")
+    if variant in {"XGBoost_Top50", "LightGBM_Top50"}:
+        merged = _get_row(metrics_at_k, "Merged_Recall")
         if merged is None:
-            return "XGBoost ranking is available, but merged recall baseline is missing."
+            return f"{variant} ranking is available, but merged recall baseline is missing."
         precision_delta = float(row["precision"]) - float(merged["precision"])
         ndcg_delta = float(row["ndcg"]) - float(merged["ndcg"])
+        label = "LightGBM" if variant == "LightGBM_Top50" else "XGBoost"
         if precision_delta > 0 or ndcg_delta > 0:
             return (
-                f"Compared with merged recall, XGBoost changes Precision@{int(row['k'])} by {_fmt_delta(precision_delta)} "
+                f"Compared with merged recall, {label} changes Precision@{int(row['k'])} by {_fmt_delta(precision_delta)} "
                 f"and NDCG@{int(row['k'])} by {_fmt_delta(ndcg_delta)}, showing ranking quality impact."
             )
         return (
-            f"Compared with merged recall, XGBoost does not improve Precision/NDCG at K={int(row['k'])} "
+            f"Compared with merged recall, {label} does not improve Precision/NDCG at K={int(row['k'])} "
             f"({_fmt_delta(precision_delta)}, {_fmt_delta(ndcg_delta)}); candidate positives are sparse."
         )
 
-    if variant == "XGBoost_MMR_Top10":
-        xgb = _get_row(metrics_at_k, "XGBoost_Top50")
-        if xgb is None:
-            return "MMR reranking is available, but XGBoost baseline is missing."
-        diversity_delta = float(row["diversity"]) - float(xgb["diversity"])
-        precision_delta = float(row["precision"]) - float(xgb["precision"])
+    if variant == "LightGBM_MMR_Top10":
+        lgb = _get_row(metrics_at_k, "LightGBM_Top50")
+        if lgb is None:
+            return "MMR reranking is available, but LightGBM baseline is missing."
+        diversity_delta = float(row["diversity"]) - float(lgb["diversity"])
+        precision_delta = float(row["precision"]) - float(lgb["precision"])
         if diversity_delta > 0:
             return (
-                f"Compared with XGBoost Top50, MMR improves Diversity@{int(row['k'])} by {_fmt_delta(diversity_delta)} "
+                f"Compared with LightGBM Top50, MMR improves Diversity@{int(row['k'])} by {_fmt_delta(diversity_delta)} "
                 f"with Precision change {_fmt_delta(precision_delta)}."
             )
         return (
-            f"Compared with XGBoost Top50, MMR does not improve Diversity@{int(row['k'])} "
+            f"Compared with LightGBM Top50, MMR does not improve Diversity@{int(row['k'])} "
             f"({_fmt_delta(diversity_delta)}); lambda_rel or candidate diversity may need tuning."
         )
 
@@ -186,23 +199,27 @@ def build_ablation_eval(
     output_path.mkdir(parents=True, exist_ok=True)
     ablation.to_csv(metrics_output, index=False)
 
-    merged_obs = _observation(metrics_at_k, "ALS+ItemCF_Merged")
+    merged_obs = _observation(metrics_at_k, "Merged_Recall")
     xgb_obs = _observation(metrics_at_k, "XGBoost_Top50")
-    mmr_obs = _observation(metrics_at_k, "XGBoost_MMR_Top10")
+    lgb_obs = _observation(metrics_at_k, "LightGBM_Top50")
+    mmr_obs = _observation(metrics_at_k, "LightGBM_MMR_Top10")
     summary = f"""# 消融实验说明
 
 ## 实验目的
 
-对比 ALS、ItemCF、多路召回融合、XGBoost 精排和 MMR 重排在离线测试集上的表现，判断各模块对推荐效果的贡献。
+对比 ALS、ItemCF、FAISS_HNSW、多路召回融合、XGBoost 基线、LightGBM 主排序模型和 MMR 重排在离线测试集上的表现，判断各模块对推荐效果的贡献。
+本报告只根据实际指标进行说明，不虚构没有体现在结果中的提升。
 
 ## 对比模型
 
 ```text
 ALS
 ItemCF
-ALS+ItemCF_Merged
+FAISS_HNSW
+Merged_Recall
 XGBoost_Top50
-XGBoost_MMR_Top10
+LightGBM_Top50
+LightGBM_MMR_Top10
 ```
 
 ## 核心指标表
@@ -217,19 +234,24 @@ XGBoost_MMR_Top10
 
 {xgb_obs}
 
+## LightGBM 主排序效果分析
+
+{lgb_obs}
+
 ## MMR 重排效果分析
 
 {mmr_obs}
 
 ## 当前不足
 
-MovieLens small 测试集每个用户只保留一条最新评分，且候选集正样本较少，因此 Precision、Recall、NDCG 的绝对值可能偏低。当前结果适合用于比较链路变化，不应直接等同于线上真实效果。
+当前 Food.com 官方离线划分在严格 Top-K 命中评估下比较稀疏，因此 Precision、Recall、NDCG 的绝对值可能偏低。
+这些结果适合用于比较不同链路版本的变化，不应直接等同于线上真实业务效果。
 
 ## 下一步优化方向
 
-1. 扩展离线评估协议，例如留多法或时间窗口评估。
+1. 扩展离线评估协议，例如时间窗口评估或留多法评估。
 2. 调整 MMR 的 `lambda_rel`，观察相关性和多样性的权衡。
-3. 在保持离线旁路的前提下增加推荐理由和前端评估页面。
+3. 提高召回候选对测试集正样本的覆盖率，再进行最终模型对比。
 """
     summary_output.write_text(summary, encoding="utf-8")
 

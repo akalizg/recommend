@@ -8,7 +8,7 @@ from typing import Any
 from app.config import get_settings
 
 
-DEFAULT_EXPERIMENT = "recall_rank_v1"
+DEFAULT_EXPERIMENT = "recipe_recall_rank_v1"
 GROUPS = ("A", "B")
 
 
@@ -33,32 +33,85 @@ class ABService:
         if not self.db_path.exists():
             return {"experiment_name": experiment_name, "groups": []}
         with sqlite3.connect(self.db_path) as conn:
+            has_feedback = _table_exists(conn, "feedback_logs")
+            has_recommendation = _table_exists(conn, "recommendation_logs")
+            parts = []
+            params: list[str] = []
+            if has_recommendation and _column_exists(conn, "recommendation_logs", "event_type"):
+                parts.append(
+                    """
+                    SELECT
+                        COALESCE(run_id, ?) AS group_name,
+                        CASE WHEN event_type = 'exposure' THEN 1 ELSE 0 END AS exposure,
+                        CASE WHEN event_type = 'click' THEN 1 ELSE 0 END AS click,
+                        CASE WHEN event_type = 'like' THEN 1 ELSE 0 END AS like_event,
+                        CASE WHEN event_type IN ('dislike', 'not_interested') THEN 1 ELSE 0 END AS negative,
+                        0 AS feedback_event
+                    FROM recommendation_logs
+                    """
+                )
+                params.append("unknown")
+            if has_feedback:
+                parts.append(
+                    """
+                    SELECT
+                        COALESCE(run_id, ?) AS group_name,
+                        0 AS exposure,
+                        CASE WHEN feedback_type = 'click' THEN 1 ELSE 0 END AS click,
+                        CASE WHEN feedback_type = 'like' THEN 1 ELSE 0 END AS like_event,
+                        CASE WHEN feedback_type IN ('dislike', 'not_interested') THEN 1 ELSE 0 END AS negative,
+                        1 AS feedback_event
+                    FROM feedback_logs
+                    """
+                )
+                params.append("unknown")
+            if not parts:
+                return {"experiment_name": experiment_name, "groups": []}
             rows = conn.execute(
-                """
+                f"""
+                WITH all_events AS (
+                    {" UNION ALL ".join(parts)}
+                )
                 SELECT
-                    COALESCE(run_id, ?) AS group_name,
-                    COUNT(*) AS events,
-                    SUM(CASE WHEN feedback_type = 'click' THEN 1 ELSE 0 END) AS clicks,
-                    SUM(CASE WHEN feedback_type = 'like' THEN 1 ELSE 0 END) AS likes,
-                    SUM(CASE WHEN feedback_type IN ('dislike', 'not_interested') THEN 1 ELSE 0 END) AS negatives
-                FROM feedback_logs
-                GROUP BY COALESCE(run_id, ?)
+                    group_name,
+                    SUM(exposure) AS exposures,
+                    SUM(click) AS clicks,
+                    SUM(like_event) AS likes,
+                    SUM(negative) AS negatives,
+                    SUM(feedback_event) AS feedback_events
+                FROM all_events
+                GROUP BY group_name
                 ORDER BY group_name
                 """,
-                ("unknown", "unknown"),
+                params,
             ).fetchall()
         groups = []
-        for group_name, events, clicks, likes, negatives in rows:
-            events = int(events or 0)
+        for group_name, exposures, clicks, likes, negatives, feedback_events in rows:
+            exposures = int(exposures or 0)
+            feedback_events = int(feedback_events or 0)
             groups.append(
                 {
                     "group_name": group_name,
-                    "events": events,
+                    "events": feedback_events,
+                    "exposures": exposures,
                     "clicks": int(clicks or 0),
                     "likes": int(likes or 0),
                     "negatives": int(negatives or 0),
-                    "ctr": float(clicks or 0) / events if events else 0.0,
-                    "like_rate": float(likes or 0) / events if events else 0.0,
+                    "ctr": float(clicks or 0) / exposures if exposures else 0.0,
+                    "like_rate": float(likes or 0) / exposures if exposures else 0.0,
+                    "negative_rate": float(negatives or 0) / exposures if exposures else 0.0,
                 }
             )
         return {"experiment_name": experiment_name, "groups": groups}
+
+
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def _column_exists(conn: sqlite3.Connection, table_name: str, column_name: str) -> bool:
+    return any(row[1] == column_name for row in conn.execute(f"PRAGMA table_info({table_name})"))

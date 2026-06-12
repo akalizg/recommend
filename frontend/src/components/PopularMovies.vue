@@ -1,7 +1,7 @@
-<template>
+﻿<template>
   <div>
     <div class="flex items-center justify-between mb-4">
-      <h2 class="text-lg font-bold text-gray-100">Popular Movies</h2>
+      <h2 class="text-lg font-bold text-gray-100">Popular Recipes</h2>
       <span v-if="tookMs" class="text-xs text-gray-500">{{ tookMs }}ms</span>
     </div>
 
@@ -25,7 +25,7 @@
 
 <script setup>
 import { ref, onMounted } from "vue";
-import { getPopular } from "../api";
+import { getOfflinePopularRecipes } from "../api";
 import MovieCard from "./MovieCard.vue";
 
 const movies = ref([]);
@@ -39,13 +39,15 @@ const props = defineProps({
 
 onMounted(async () => {
   try {
-    const { data } = await getPopular(props.limit);
-    movies.value = data.popular || data;
-    tookMs.value = data.took_ms;
+    const started = performance.now();
+    const { data } = await getOfflinePopularRecipes(props.limit);
+    movies.value = data.popular || [];
+    tookMs.value = Math.round(performance.now() - started);
   } catch (e) {
-    error.value = "Failed to load popular movies";
+    error.value = "Failed to load popular recipes";
   } finally {
     loading.value = false;
   }
 });
 </script>
+

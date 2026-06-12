@@ -12,16 +12,26 @@ def test_ablation_eval_importable():
 
 def test_ablation_eval_outputs(tmp_path):
     from evaluate.ablation_eval import VARIANT_ORDER, build_ablation_eval
-    from evaluate.offline_metrics import DEFAULT_MOVIE_PROFILE, DEFAULT_TEST, MODEL_FILES, evaluate_offline_metrics
-    from rank.mmr_rerank import DEFAULT_RANKED, mmr_rerank
 
-    mmr_output = tmp_path / "rank" / "ranked_top10_mmr.csv"
-    mmr_rerank(DEFAULT_RANKED, DEFAULT_MOVIE_PROFILE, mmr_output, top_n=10, lambda_rel=0.7)
-
-    model_files = dict(MODEL_FILES)
-    model_files["XGBoost_MMR_Top10"] = mmr_output
     eval_dir = tmp_path / "eval"
-    evaluate_offline_metrics(DEFAULT_TEST, DEFAULT_MOVIE_PROFILE, eval_dir, "10", model_files)
+    eval_dir.mkdir(parents=True)
+    rows = []
+    for idx, variant in enumerate(VARIANT_ORDER):
+        rows.append(
+            {
+                "model_name": variant,
+                "k": 10,
+                "precision": 0.0,
+                "recall": 0.0,
+                "ndcg": 0.0,
+                "hit_rate": 0.0,
+                "coverage": 0.1 + idx * 0.01,
+                "diversity": 0.7 + idx * 0.01,
+                "evaluated_users": 3,
+                "recommended_items": 10 + idx,
+            }
+        )
+    pd.DataFrame(rows).to_csv(eval_dir / "offline_metrics.csv", index=False)
 
     result = build_ablation_eval(eval_dir / "offline_metrics.csv", eval_dir, k=10)
     metrics_path = eval_dir / "ablation_metrics.csv"

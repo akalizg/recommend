@@ -1,11 +1,10 @@
-<template>
+﻿<template>
   <nav class="bg-gray-800 border-b border-gray-700 sticky top-0 z-50">
     <div class="max-w-7xl mx-auto px-4">
       <div class="flex items-center justify-between h-14">
         <!-- Logo -->
         <router-link to="/" class="flex items-center gap-2 text-primary-400 font-bold text-lg">
-          <span class="text-2xl">🎬</span>
-          <span>MovieRec</span>
+          <span>RecipeRec</span>
         </router-link>
 
         <!-- Links -->
@@ -14,7 +13,7 @@
             Home
           </router-link>
           <router-link to="/recommend" class="text-gray-300 hover:text-white transition-colors">
-            Recommend
+            Recipes
           </router-link>
           <router-link to="/search" class="text-gray-300 hover:text-white transition-colors">
             Search
@@ -41,7 +40,7 @@
           Home
         </router-link>
         <router-link to="/recommend" class="block py-2 text-gray-300 hover:text-white" @click="mobileOpen = false">
-          Recommend
+          Recipes
         </router-link>
         <router-link to="/search" class="block py-2 text-gray-300 hover:text-white" @click="mobileOpen = false">
           Search
@@ -56,3 +55,4 @@ import { ref } from "vue";
 
 const mobileOpen = ref(false);
 </script>
+

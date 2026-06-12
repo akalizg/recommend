@@ -23,6 +23,10 @@ accelerate==1.14.0
 
 # Redis
 redis==5.2.1
+kafka-python==3.0.0
+
+# Object Storage
+minio>=7.2.0,<8.0.0
 
 # HTTP Client
 httpx==0.28.1

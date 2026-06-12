@@ -8,7 +8,8 @@ const routes = [
   { path: "/", name: "Home", component: Home },
   { path: "/recommend/:userId?", name: "Recommend", component: Recommend },
   { path: "/search", name: "Search", component: Search },
-  { path: "/movie/:movieId", name: "MovieDetail", component: MovieDetail },
+  { path: "/recipe/:movieId", name: "RecipeDetail", component: MovieDetail },
+  { path: "/movie/:movieId", redirect: to => `/recipe/${to.params.movieId}` },
 ];
 
 const router = createRouter({

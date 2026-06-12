@@ -1,13 +1,13 @@
-<template>
+﻿<template>
   <div class="space-y-6">
-    <h1 class="text-2xl font-bold text-gray-100">Search Movies</h1>
+    <h1 class="text-2xl font-bold text-gray-100">Search Recipes</h1>
 
     <!-- Search Bar -->
     <div class="flex gap-3">
       <input
         v-model="query"
         type="text"
-        placeholder="Search by title... (e.g., Toy Story, Matrix, Star Wars)"
+        placeholder="Search by recipe name... (e.g., pasta, chicken, cookies)"
         class="flex-1 bg-gray-800 border border-gray-600 rounded-lg px-4 py-2.5 text-gray-100 focus:outline-none focus:ring-2 focus:ring-primary-500"
         @keyup.enter="doSearch"
       />
@@ -34,14 +34,14 @@
     <!-- Empty -->
     <div v-else-if="searchedQuery" class="text-center py-16 text-gray-500">
       <div class="text-6xl mb-4">🔍</div>
-      <p>No movies found for "{{ searchedQuery }}"</p>
+      <p>No recipes found for "{{ searchedQuery }}"</p>
     </div>
 
     <!-- Initial state -->
     <div v-else class="text-center py-16 text-gray-500">
       <div class="text-6xl mb-4">🔍</div>
-      <p class="text-lg">Search for your favorite movies</p>
-      <p class="text-sm mt-1">Try "Toy Story", "Matrix", or "Star Wars"</p>
+      <p class="text-lg">Search for recipes</p>
+      <p class="text-sm mt-1">Try "pasta", "chicken", or "cookies"</p>
     </div>
   </div>
 </template>
@@ -76,3 +76,4 @@ async function doSearch() {
   }
 }
 </script>
+

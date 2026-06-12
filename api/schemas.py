@@ -10,6 +10,13 @@ class MovieItem(BaseModel):
     title: str
     score: float
     genres: str = ""
+    avg_rating: Optional[float] = None
+    rating_count: Optional[int] = None
+    review_count: Optional[int] = None
+    image_url: str = ""
+    ready_in_display: str = ""
+    recipe_yield_raw: str = ""
+    author_name: str = ""
     poster_url: str = ""
     backdrop_url: str = ""
     overview: str = ""
@@ -73,6 +80,36 @@ class OfflineMovieProfileResponse(BaseModel):
     source: str
 
 
+class OfflinePopularRecipesResponse(BaseModel):
+    popular: List[dict]
+    total: int
+    source: str
+
+
+class SimilarRecipesResponse(BaseModel):
+    movie_id: int
+    similar: List[MovieItem]
+    total: int
+    source: str
+
+
+class ColdStartRequest(BaseModel):
+    preferred_tags: List[str] = Field(default_factory=list)
+    ingredients: List[str] = Field(default_factory=list)
+    dietary_goals: List[str] = Field(default_factory=list)
+    max_minutes: Optional[int] = Field(default=None, ge=1)
+    min_rating: Optional[float] = Field(default=None, ge=0, le=5)
+    require_image: bool = False
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+class ColdStartResponse(BaseModel):
+    recommendations: List[MovieItem]
+    total: int
+    source: str
+    preference_profile: dict
+
+
 class FeedbackRequest(BaseModel):
     user_id: int
     movie_id: int
@@ -80,9 +117,24 @@ class FeedbackRequest(BaseModel):
     feedback_value: Optional[float] = None
     request_id: Optional[str] = None
     run_id: Optional[str] = None
+    experiment_name: Optional[str] = None
+    group_name: Optional[str] = None
     rank_position: Optional[int] = None
     score: Optional[float] = None
     reason: Optional[str] = None
+
+
+class ExposureRequest(BaseModel):
+    user_id: int
+    movie_id: int
+    request_id: Optional[str] = None
+    run_id: Optional[str] = None
+    experiment_name: Optional[str] = None
+    group_name: Optional[str] = None
+    rank_position: Optional[int] = None
+    score: Optional[float] = None
+    reason: Optional[str] = None
+    model_name: str = "recipe_offline"
 
 
 class FeedbackResponse(BaseModel):
@@ -92,6 +144,7 @@ class FeedbackResponse(BaseModel):
     movie_id: int
     feedback_type: str
     realtime_profile: dict
+    kafka_sent: bool = False
 
 
 class RealtimeProfileResponse(BaseModel):
@@ -118,6 +171,23 @@ class MovieDetail(BaseModel):
     rating_count: int
     popularity_score: float
     year: Optional[int] = None
+    image_url: str = ""
+    description: str = ""
+    minutes: Optional[float] = None
+    ready_in_display: str = ""
+    recipe_yield_raw: str = ""
+    serves_best_guess: Optional[float] = None
+    author_name: str = ""
+    source_url: str = ""
+    ingredients_json: Optional[Any] = None
+    quantities_json: Optional[Any] = None
+    steps_json: Optional[Any] = None
+    nutrition_json: Optional[Any] = None
+    n_ingredients: Optional[int] = None
+    n_steps: Optional[int] = None
+    submitted: str = ""
+    photo_count: Optional[int] = None
+    review_count: Optional[int] = None
     poster_url: str = ""
     backdrop_url: str = ""
     overview: str = ""

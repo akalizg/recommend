@@ -13,6 +13,11 @@ import sys
 import tempfile
 from pathlib import Path
 
+try:
+    from spark_utils import build_spark_session
+except ModuleNotFoundError:
+    from spark_jobs.spark_utils import build_spark_session
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_TRAIN = PROJECT_ROOT / "data" / "processed" / "train_ratings.csv"
@@ -55,16 +60,13 @@ def require_pyspark():
 def create_spark_session(app_name: str = "MovieRecSparkItemCF"):
     SparkSession, _, _, _ = require_pyspark()
     try:
-        return (
-            SparkSession.builder.appName(app_name)
-            .master("local[*]")
-            .config("spark.driver.memory", "4g")
-            .config("spark.executor.memory", "4g")
-            .config("spark.sql.shuffle.partitions", "64")
-            .config("spark.default.parallelism", "64")
-            .config("spark.sql.session.timeZone", "UTC")
-            .config("spark.ui.showConsoleProgress", "false")
-            .getOrCreate()
+        return build_spark_session(
+            SparkSession,
+            app_name,
+            default_driver_memory="4g",
+            default_executor_memory="4g",
+            default_shuffle_partitions=64,
+            default_parallelism=64,
         )
     except Exception as exc:
         raise RuntimeError(

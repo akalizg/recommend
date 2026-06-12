@@ -38,6 +38,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT))
     parser.add_argument("--top-n", type=int, default=50)
     parser.add_argument("--max-features", type=int, default=20000)
+    parser.add_argument("--max-candidate-movies", type=int, default=20000)
+    parser.add_argument("--query-batch-size", type=int, default=256)
+    parser.add_argument("--candidate-extra", type=int, default=300)
     return parser.parse_args()
 
 
@@ -86,6 +89,9 @@ def build_content_recall(
     output_path: str | Path | None = None,
     top_n: int = 50,
     max_features: int = 20000,
+    max_candidate_movies: int = 20000,
+    query_batch_size: int = 256,
+    candidate_extra: int = 300,
 ) -> dict:
     user_file = Path(user_profile_path).resolve() if user_profile_path else DEFAULT_USER_PROFILE
     movie_file = Path(movie_profile_path).resolve() if movie_profile_path else DEFAULT_MOVIE_PROFILE
@@ -94,6 +100,12 @@ def build_content_recall(
 
     if top_n <= 0:
         raise ValueError("top_n must be positive.")
+    if max_candidate_movies <= 0:
+        raise ValueError("max_candidate_movies must be positive.")
+    if query_batch_size <= 0:
+        raise ValueError("query_batch_size must be positive.")
+    if candidate_extra < 0:
+        raise ValueError("candidate_extra must be zero or positive.")
     for path in (user_file, movie_file, train_file):
         _require_file(path)
 
@@ -113,11 +125,24 @@ def build_content_recall(
     movies["movieId"] = pd.to_numeric(movies["movieId"], errors="coerce")
     movies = movies.dropna(subset=["movieId"]).drop_duplicates("movieId").copy()
     movies["movieId"] = movies["movieId"].astype(int)
+    for col in ["movie_popularity", "movie_rating_count", "movie_avg_rating"]:
+        if col not in movies.columns:
+            movies[col] = 0.0
+        movies[col] = pd.to_numeric(movies[col], errors="coerce").fillna(0.0)
     movies["content_text"] = movies.apply(_movie_text, axis=1)
+    candidate_movies = (
+        movies.sort_values(
+            ["movie_popularity", "movie_rating_count", "movie_avg_rating", "movieId"],
+            ascending=[False, False, False, True],
+        )
+        .head(max_candidate_movies)
+        .copy()
+    )
 
     vectorizer = TfidfVectorizer(max_features=max_features, ngram_range=(1, 2), min_df=1)
-    movie_matrix = vectorizer.fit_transform(movies["content_text"].fillna(""))
-    movie_ids = movies["movieId"].to_numpy()
+    vectorizer.fit(movies["content_text"].fillna(""))
+    movie_matrix = vectorizer.transform(candidate_movies["content_text"].fillna(""))
+    movie_ids = candidate_movies["movieId"].to_numpy()
     movie_text_by_id = dict(zip(movies["movieId"], movies["content_text"]))
 
     ratings["userId"] = pd.to_numeric(ratings["userId"], errors="coerce")
@@ -130,7 +155,7 @@ def build_content_recall(
         .to_dict()
     )
 
-    rows: list[dict] = []
+    query_rows: list[tuple[int, str]] = []
     for user in users.to_dict(orient="records"):
         user_id = int(user["userId"])
         favorite_text = _clean_text(user.get("favorite_genres"))
@@ -141,29 +166,44 @@ def build_content_recall(
         query_text = " ".join(part for part in [favorite_text, high_movie_text] if part).strip()
         if not query_text:
             continue
-        query_vec = vectorizer.transform([query_text])
-        scores = linear_kernel(query_vec, movie_matrix).ravel()
-        seen = rated_by_user.get(user_id, set())
-        order = np.argsort(scores)[::-1]
-        selected = []
-        for idx in order:
-            score = float(scores[idx])
-            movie_id = int(movie_ids[idx])
-            if score <= 0:
-                break
-            if movie_id in seen:
-                continue
-            selected.append(
-                {
-                    "userId": user_id,
-                    "movieId": movie_id,
-                    "recall_type": "content",
-                    "recall_score": score,
-                }
-            )
-            if len(selected) >= top_n:
-                break
-        rows.extend(selected)
+        query_rows.append((user_id, query_text))
+
+    rows: list[dict] = []
+    if query_rows:
+        neighbor_count = min(len(movie_ids), top_n + candidate_extra)
+        for start in range(0, len(query_rows), query_batch_size):
+            batch = query_rows[start : start + query_batch_size]
+            batch_user_ids = [user_id for user_id, _ in batch]
+            batch_texts = [text for _, text in batch]
+            query_matrix = vectorizer.transform(batch_texts)
+            score_matrix = linear_kernel(query_matrix, movie_matrix)
+            for row_idx, user_id in enumerate(batch_user_ids):
+                scores = score_matrix[row_idx]
+                if neighbor_count >= len(scores):
+                    candidate_idx = np.argsort(scores)[::-1]
+                else:
+                    candidate_idx = np.argpartition(scores, -neighbor_count)[-neighbor_count:]
+                    candidate_idx = candidate_idx[np.argsort(scores[candidate_idx])[::-1]]
+                seen = rated_by_user.get(user_id, set())
+                selected = 0
+                for idx in candidate_idx:
+                    score = float(scores[idx])
+                    if score <= 0:
+                        break
+                    movie_id = int(movie_ids[idx])
+                    if movie_id in seen:
+                        continue
+                    rows.append(
+                        {
+                            "userId": user_id,
+                            "movieId": movie_id,
+                            "recall_type": "content",
+                            "recall_score": score,
+                        }
+                    )
+                    selected += 1
+                    if selected >= top_n:
+                        break
 
     output = pd.DataFrame(rows, columns=OUTPUT_COLUMNS)
     if output.empty:
@@ -173,6 +213,8 @@ def build_content_recall(
     summary = {
         "user_count": int(users["userId"].nunique()),
         "movie_count": int(movies["movieId"].nunique()),
+        "candidate_movie_count": int(len(candidate_movies)),
+        "query_user_count": int(len(query_rows)),
         "output_rows": int(len(output)),
         "top_n": int(top_n),
         "output_path": str(output_file),
@@ -191,6 +233,9 @@ def main() -> None:
             args.output,
             args.top_n,
             args.max_features,
+            args.max_candidate_movies,
+            args.query_batch_size,
+            args.candidate_extra,
         )
     except Exception as exc:
         logger.error("%s", exc)

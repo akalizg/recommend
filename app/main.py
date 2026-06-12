@@ -172,7 +172,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.app_name,
         version=settings.app_version,
-        description="MovieLens-based recommendation system with FAISS HNSW + XGBoost",
+        description="Food.com recipe recommendation system with offline recall, ranking, LightGCN, and feedback loops",
         docs_url="/docs",
         redoc_url="/redoc",
         lifespan=lifespan,

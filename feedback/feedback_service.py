@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import PROJECT_ROOT, get_settings
+from feedback.kafka_producer import FeedbackKafkaProducer
 
 
 VALID_FEEDBACK_TYPES = {"click", "like", "dislike", "not_interested", "seen", "rating"}
@@ -15,9 +16,15 @@ NEGATIVE_FEEDBACK = {"dislike", "not_interested"}
 
 
 class FeedbackService:
-    def __init__(self, db_path: str | Path | None = None, cache: Any = None) -> None:
+    def __init__(
+        self,
+        db_path: str | Path | None = None,
+        cache: Any = None,
+        kafka_producer: FeedbackKafkaProducer | None = None,
+    ) -> None:
         self.db_path = Path(db_path or get_settings().recommendation_db_path)
         self.cache = cache
+        self.kafka_producer = kafka_producer or FeedbackKafkaProducer()
 
     def record_feedback(
         self,
@@ -27,6 +34,8 @@ class FeedbackService:
         feedback_value: float | None = None,
         request_id: str | None = None,
         run_id: str | None = None,
+        experiment_name: str | None = None,
+        group_name: str | None = None,
         rank_position: int | None = None,
         score: float | None = None,
         reason: str | None = None,
@@ -37,6 +46,8 @@ class FeedbackService:
 
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         created_at = datetime.now(timezone.utc).isoformat()
+        group = group_name or run_id
+        model_name = experiment_name or "recipe_feedback"
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("PRAGMA foreign_keys = ON")
             self._ensure_user_movie(conn, user_id, movie_id)
@@ -64,8 +75,8 @@ class FeedbackService:
                     rank_position,
                     score,
                     reason,
-                    "feedback",
-                    run_id,
+                    model_name,
+                    group,
                     feedback_type,
                     created_at,
                 ),
@@ -80,6 +91,24 @@ class FeedbackService:
             feedback_value=feedback_value,
             created_at=created_at,
         )
+        kafka_event = {
+            "event_type": "feedback",
+            "user_id": user_id,
+            "movie_id": movie_id,
+            "recipe_id": movie_id,
+            "feedback_type": feedback_type,
+            "feedback_value": feedback_value,
+            "request_id": request_id,
+            "run_id": run_id,
+            "experiment_name": experiment_name,
+            "group_name": group_name,
+            "rank_position": rank_position,
+            "score": score,
+            "reason": reason,
+            "created_at": created_at,
+            "source": "fastapi_feedback",
+        }
+        kafka_sent = self.kafka_producer.send_event(kafka_event) if self.kafka_producer else False
         return {
             "feedback_id": feedback_id,
             "user_id": user_id,
@@ -87,6 +116,65 @@ class FeedbackService:
             "feedback_type": feedback_type,
             "created_at": created_at,
             "realtime_profile": realtime_profile,
+            "kafka_sent": kafka_sent,
+        }
+
+    def record_exposure(
+        self,
+        user_id: int,
+        movie_id: int,
+        request_id: str | None = None,
+        run_id: str | None = None,
+        experiment_name: str | None = None,
+        group_name: str | None = None,
+        rank_position: int | None = None,
+        score: float | None = None,
+        reason: str | None = None,
+        model_name: str = "recipe_offline",
+    ) -> dict[str, Any]:
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        created_at = datetime.now(timezone.utc).isoformat()
+        group = group_name or run_id
+        model = experiment_name or model_name
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("PRAGMA foreign_keys = ON")
+            self._ensure_user_movie(conn, user_id, movie_id)
+            cursor = conn.execute(
+                """
+                INSERT INTO recommendation_logs (
+                    request_id, user_id, movie_id, rank_position, score, reason,
+                    model_name, run_id, event_type, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'exposure', ?)
+                """,
+                (request_id, user_id, movie_id, rank_position, score, reason, model, group, created_at),
+            )
+            conn.commit()
+            event_id = int(cursor.lastrowid)
+        kafka_event = {
+            "event_type": "exposure",
+            "user_id": user_id,
+            "movie_id": movie_id,
+            "recipe_id": movie_id,
+            "request_id": request_id,
+            "run_id": run_id,
+            "experiment_name": experiment_name,
+            "group_name": group_name,
+            "rank_position": rank_position,
+            "score": score,
+            "reason": reason,
+            "model_name": model,
+            "created_at": created_at,
+            "source": "fastapi_exposure",
+        }
+        kafka_sent = self.kafka_producer.send_event(kafka_event) if self.kafka_producer else False
+        return {
+            "event_id": event_id,
+            "user_id": user_id,
+            "movie_id": movie_id,
+            "event_type": "exposure",
+            "created_at": created_at,
+            "kafka_sent": kafka_sent,
         }
 
     def update_realtime_profile(
@@ -101,6 +189,8 @@ class FeedbackService:
             "user_id": user_id,
             "positive_movie_ids": [],
             "negative_movie_ids": [],
+            "positive_recipe_ids": [],
+            "negative_recipe_ids": [],
             "recent_feedback": [],
             "updated_at": created_at,
         }
@@ -112,10 +202,13 @@ class FeedbackService:
 
         if feedback_type in POSITIVE_FEEDBACK:
             _append_unique(profile["positive_movie_ids"], movie_id, max_len=100)
+            _append_unique(profile["positive_recipe_ids"], movie_id, max_len=100)
         if feedback_type in NEGATIVE_FEEDBACK:
             _append_unique(profile["negative_movie_ids"], movie_id, max_len=100)
+            _append_unique(profile["negative_recipe_ids"], movie_id, max_len=100)
         event = {
             "movie_id": movie_id,
+            "recipe_id": movie_id,
             "feedback_type": feedback_type,
             "feedback_value": feedback_value,
             "created_at": created_at,
@@ -153,17 +246,22 @@ class FeedbackService:
             "user_id": user_id,
             "positive_movie_ids": [],
             "negative_movie_ids": [],
+            "positive_recipe_ids": [],
+            "negative_recipe_ids": [],
             "recent_feedback": [],
             "updated_at": rows[0][3],
         }
         for movie_id, feedback_type, feedback_value, created_at in rows:
             if feedback_type in POSITIVE_FEEDBACK:
                 _append_unique(profile["positive_movie_ids"], int(movie_id), max_len=100)
+                _append_unique(profile["positive_recipe_ids"], int(movie_id), max_len=100)
             if feedback_type in NEGATIVE_FEEDBACK:
                 _append_unique(profile["negative_movie_ids"], int(movie_id), max_len=100)
+                _append_unique(profile["negative_recipe_ids"], int(movie_id), max_len=100)
             profile["recent_feedback"].append(
                 {
                     "movie_id": int(movie_id),
+                    "recipe_id": int(movie_id),
                     "feedback_type": feedback_type,
                     "feedback_value": feedback_value,
                     "created_at": created_at,
@@ -179,7 +277,7 @@ class FeedbackService:
             VALUES (?, ?)
             ON CONFLICT(movie_id) DO NOTHING
             """,
-            (movie_id, f"Movie {movie_id}"),
+            (movie_id, f"Recipe {movie_id}"),
         )
 
 
