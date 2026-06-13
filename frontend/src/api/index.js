@@ -26,6 +26,10 @@ export function getColdStartRecipes(payload) {
   return api.post("/recipes/cold-start", payload);
 }
 
+export function getRecipeIngredients(params = {}) {
+  return api.get("/recipes/ingredients", { params });
+}
+
 export function submitFeedback(payload) {
   return api.post("/feedback", payload);
 }

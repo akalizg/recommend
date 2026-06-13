@@ -133,6 +133,19 @@ class ScenarioRecommendResponse(BaseModel):
     context: dict = Field(default_factory=dict)
 
 
+class IngredientItem(BaseModel):
+    name: str
+    label: str
+    count: int
+
+
+class IngredientSearchResponse(BaseModel):
+    ingredients: List[IngredientItem]
+    total: int
+    source: str
+    query: str = ""
+
+
 class AuthRegisterRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=32)
     password: str = Field(..., min_length=6, max_length=128)

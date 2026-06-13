@@ -1,90 +1,84 @@
-﻿<template>
-  <div class="space-y-8">
-    <div class="text-center py-12">
-      <h1 class="text-4xl font-bold text-gray-100 mb-3">
-        食谱推荐系统
-      </h1>
-      <p class="text-gray-400 text-lg mb-6">
-        基于 Food.com 数据集的智能食谱推荐平台，支持个性化推荐、冰箱食材、健康饮食、快手菜和探索发现等场景
-      </p>
-      <div class="flex justify-center gap-4">
-        <router-link
-          to="/recommend"
-          class="px-6 py-2.5 bg-primary-600 hover:bg-primary-500 rounded-lg text-white font-medium transition-colors"
-        >
-          打开推荐
-        </router-link>
-        <router-link
-          to="/search"
-          class="px-6 py-2.5 bg-gray-700 hover:bg-gray-600 rounded-lg text-gray-200 font-medium transition-colors"
-        >
-          搜索菜谱
-        </router-link>
+<template>
+  <div class="space-y-16">
+    <section class="grid min-h-[520px] items-center gap-10 py-8 lg:grid-cols-[1.05fr_0.95fr]">
+      <div>
+        <p class="mb-4 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Food.com Recipe Intelligence</p>
+        <h1 class="max-w-4xl text-5xl leading-[1.05] text-gray-100 md:text-6xl">
+          像和助手聊天一样，找到今天真正想吃的菜。
+        </h1>
+        <p class="mt-6 max-w-2xl text-base leading-7 text-gray-400">
+          系统把 Food.com 的食谱、交互、营养、图片和向量召回组织成一个中文对话式推荐体验，支持食材、健康、快手和探索发现等场景。
+        </p>
+        <div class="mt-8 flex flex-wrap gap-3">
+          <router-link
+            to="/recommend"
+            class="rounded-full bg-primary-600 px-5 py-3 text-sm font-medium text-white transition-colors hover:bg-primary-500"
+          >
+            开始对话推荐
+          </router-link>
+          <router-link
+            to="/search"
+            class="rounded-full border border-slate-700 px-5 py-3 text-sm font-medium text-gray-100 transition-colors hover:border-slate-500"
+          >
+            搜索菜谱库
+          </router-link>
+        </div>
       </div>
-    </div>
 
-    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-      <div class="bg-gray-800 rounded-xl p-4 text-center">
-        <div class="text-2xl font-bold text-primary-400">178K</div>
-        <div class="text-xs text-gray-400 mt-1">菜谱规模</div>
+      <div class="rounded-[24px] border border-slate-700 bg-slate-900 p-6 shadow-lg">
+        <div class="space-y-4">
+          <div class="rounded-xl border border-slate-700 bg-slate-800 p-4">
+            <p class="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">User request</p>
+            <p class="mt-2 text-lg text-gray-100">我有鸡肉和土豆，想做 30 分钟内的高蛋白晚餐。</p>
+          </div>
+          <div class="rounded-xl border border-slate-700 bg-slate-800 p-4">
+            <p class="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Assistant</p>
+            <p class="mt-2 text-sm leading-6 text-gray-400">
+              已切换到食材场景，并加入快手和高蛋白目标。系统会先召回候选，再用排序模型和模板理由解释每道菜为什么适合你。
+            </p>
+          </div>
+          <div class="grid grid-cols-3 gap-3 text-center">
+            <div class="rounded-xl border border-slate-700 bg-slate-800 p-4">
+              <div class="text-2xl text-primary-400">178K</div>
+              <div class="mt-1 text-xs text-gray-400">菜谱</div>
+            </div>
+            <div class="rounded-xl border border-slate-700 bg-slate-800 p-4">
+              <div class="text-2xl text-primary-400">25K</div>
+              <div class="mt-1 text-xs text-gray-400">用户</div>
+            </div>
+            <div class="rounded-xl border border-slate-700 bg-slate-800 p-4">
+              <div class="text-2xl text-primary-400">0.980</div>
+              <div class="mt-1 text-xs text-gray-400">AUC</div>
+            </div>
+          </div>
+        </div>
       </div>
-      <div class="bg-gray-800 rounded-xl p-4 text-center">
-        <div class="text-2xl font-bold text-primary-400">25K</div>
-        <div class="text-xs text-gray-400 mt-1">用户规模</div>
-      </div>
-      <div class="bg-gray-800 rounded-xl p-4 text-center">
-        <div class="text-2xl font-bold text-primary-400">250K</div>
-        <div class="text-xs text-gray-400 mt-1">最终推荐结果</div>
-      </div>
-      <div class="bg-gray-800 rounded-xl p-4 text-center">
-        <div class="text-2xl font-bold text-primary-400">0.980</div>
-        <div class="text-xs text-gray-400 mt-1">排序模型 AUC</div>
-      </div>
-    </div>
+    </section>
 
     <PopularMovies :limit="20" />
 
-    <div class="bg-gray-800 rounded-xl p-6">
-      <h2 class="text-lg font-bold text-gray-100 mb-4">技术栈</h2>
-      <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-        <div class="bg-gray-700/50 rounded-lg p-3">
-          <div class="text-primary-400 font-semibold">FastAPI</div>
-          <div class="text-gray-400 text-xs mt-0.5">后端接口</div>
-        </div>
-        <div class="bg-gray-700/50 rounded-lg p-3">
-          <div class="text-primary-400 font-semibold">Spark</div>
-          <div class="text-gray-400 text-xs mt-0.5">离线批处理</div>
-        </div>
-        <div class="bg-gray-700/50 rounded-lg p-3">
-          <div class="text-primary-400 font-semibold">FAISS + HNSW</div>
-          <div class="text-gray-400 text-xs mt-0.5">相似菜谱召回</div>
-        </div>
-        <div class="bg-gray-700/50 rounded-lg p-3">
-          <div class="text-primary-400 font-semibold">LightGBM</div>
-          <div class="text-gray-400 text-xs mt-0.5">主排序模型</div>
-        </div>
-        <div class="bg-gray-700/50 rounded-lg p-3">
-          <div class="text-primary-400 font-semibold">Redis</div>
-          <div class="text-gray-400 text-xs mt-0.5">缓存层</div>
-        </div>
-        <div class="bg-gray-700/50 rounded-lg p-3">
-          <div class="text-primary-400 font-semibold">Elasticsearch</div>
-          <div class="text-gray-400 text-xs mt-0.5">菜谱搜索</div>
-        </div>
-        <div class="bg-gray-700/50 rounded-lg p-3">
-          <div class="text-primary-400 font-semibold">Vue 3</div>
-          <div class="text-gray-400 text-xs mt-0.5">前端页面</div>
-        </div>
-        <div class="bg-gray-700/50 rounded-lg p-3">
-          <div class="text-primary-400 font-semibold">Food.com</div>
-          <div class="text-gray-400 text-xs mt-0.5">实验数据集</div>
+    <section class="space-y-5">
+      <div>
+        <p class="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">System stack</p>
+        <h2 class="mt-2 text-4xl text-gray-100">推荐链路</h2>
+      </div>
+      <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+        <div v-for="item in stackItems" :key="item.name" class="rounded-xl border border-slate-700 bg-gray-800 p-5">
+          <div class="text-base font-medium text-gray-100">{{ item.name }}</div>
+          <p class="mt-2 text-sm leading-6 text-gray-400">{{ item.desc }}</p>
         </div>
       </div>
-    </div>
+    </section>
   </div>
 </template>
 
 <script setup>
 import PopularMovies from "../components/PopularMovies.vue";
-</script>
 
+const stackItems = [
+  { name: "Spark 离线批处理", desc: "生成用户画像、食谱画像、召回候选和排序特征。" },
+  { name: "FAISS + LightGCN", desc: "支持相似食谱和图召回，让推荐不止依赖热门结果。" },
+  { name: "LightGBM 排序", desc: "在多路召回基础上选择更适合当前用户和场景的菜谱。" },
+  { name: "对话式前端", desc: "把食材、健康、时间和探索需求解析成可执行的推荐参数。" },
+];
+</script>

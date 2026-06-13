@@ -3,6 +3,7 @@ FastAPI route definitions for the recommendation system.
 """
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Optional
@@ -34,6 +35,7 @@ from api.schemas import (
     ColdStartResponse,
     ScenarioRecommendRequest,
     ScenarioRecommendResponse,
+    IngredientSearchResponse,
     AuthRegisterRequest,
     AuthLoginRequest,
     AuthUserResponse,
@@ -61,6 +63,7 @@ OFFLINE_USER_PROFILE_PATH = PROJECT_ROOT / "data" / "features" / "user_profile.c
 OFFLINE_MOVIE_PROFILE_PATH = PROJECT_ROOT / "data" / "features" / "movie_profile.csv"
 OFFLINE_RECIPE_DETAIL_PATH = PROJECT_ROOT / "data" / "recipe-canonical" / "recipe_detail_metadata.csv"
 OFFLINE_RECIPE_METADATA_PATH = PROJECT_ROOT / "data" / "recipe-canonical" / "recipe_metadata.csv"
+OFFLINE_INGREDIENT_TRANSLATION_PATH = PROJECT_ROOT / "data" / "recipe-canonical" / "ingredient_frequency_translated.tsv"
 ENHANCED_RANKED_TOP50_PATH = PROJECT_ROOT / "data" / "rank" / "enhanced" / "ranked_top50_enhanced.csv"
 FAISS_HNSW_SPARK_INDEX_PATH = PROJECT_ROOT / "models" / "faiss_hnsw_spark.index"
 FAISS_HNSW_SPARK_IDS_PATH = PROJECT_ROOT / "models" / "faiss_hnsw_spark_ids.npy"
@@ -70,6 +73,158 @@ FAISS_SPARK_VECTOR_IDS_PATH = PROJECT_ROOT / "data" / "faiss" / "movie_ids.npy"
 _faiss_similarity_cache: dict[str, object] = {}
 _offline_table_cache: dict[str, object] = {}
 _recipe_detail_row_cache: dict[int, dict] = {}
+_ingredient_map_cache: dict[str, object] = {}
+
+_INGREDIENT_WORD_LABELS = {
+    "all-purpose": "通用",
+    "almonds": "杏仁",
+    "apple": "苹果",
+    "apples": "苹果",
+    "bacon": "培根",
+    "baking": "烘焙",
+    "banana": "香蕉",
+    "bananas": "香蕉",
+    "basil": "罗勒",
+    "bay": "月桂",
+    "beans": "豆",
+    "beef": "牛肉",
+    "bell": "甜椒",
+    "berries": "浆果",
+    "black": "黑",
+    "boneless": "无骨",
+    "breast": "胸肉",
+    "breasts": "胸肉",
+    "broth": "汤",
+    "brown": "红",
+    "butter": "黄油",
+    "buttermilk": "酪乳",
+    "canned": "罐装",
+    "carrot": "胡萝卜",
+    "carrots": "胡萝卜",
+    "cheddar": "切达",
+    "cheese": "奶酪",
+    "chicken": "鸡肉",
+    "chilies": "辣椒",
+    "chili": "辣椒",
+    "chips": "碎片",
+    "chocolate": "巧克力",
+    "cilantro": "香菜",
+    "cinnamon": "肉桂",
+    "clove": "瓣",
+    "cloves": "瓣",
+    "condensed": "浓缩",
+    "cooked": "熟",
+    "cooking": "烹饪",
+    "corn": "玉米",
+    "cream": "奶油",
+    "dry": "干",
+    "egg": "鸡蛋",
+    "eggs": "鸡蛋",
+    "fat-free": "无脂",
+    "feta": "菲达",
+    "fillets": "鱼片",
+    "flour": "面粉",
+    "fresh": "新鲜",
+    "freshly": "新鲜",
+    "garlic": "大蒜",
+    "ginger": "姜",
+    "granules": "颗粒",
+    "green": "青",
+    "ground": "碎",
+    "half": "半块",
+    "halves": "半块",
+    "hot": "辣",
+    "italian": "意式",
+    "jack": "杰克",
+    "leaf": "叶",
+    "leaves": "叶",
+    "lean": "瘦",
+    "lemon": "柠檬",
+    "light": "淡",
+    "low-fat": "低脂",
+    "low-sodium": "低钠",
+    "mayonnaise": "蛋黄酱",
+    "milk": "牛奶",
+    "monterey": "蒙特利",
+    "mushroom": "蘑菇",
+    "mushrooms": "蘑菇",
+    "mustard": "芥末",
+    "noodles": "面条",
+    "nutmeg": "肉豆蔻",
+    "oil": "油",
+    "olive": "橄榄",
+    "olives": "橄榄",
+    "onion": "洋葱",
+    "onions": "洋葱",
+    "paprika": "红椒粉",
+    "parmesan": "帕玛森",
+    "parsley": "欧芹",
+    "pepper": "胡椒",
+    "peppers": "椒",
+    "pieces": "块",
+    "pork": "猪肉",
+    "potato": "土豆",
+    "potatoes": "土豆",
+    "powder": "粉",
+    "red": "红",
+    "reduced-sodium": "低钠",
+    "rice": "米饭",
+    "salsa": "莎莎酱",
+    "sauce": "酱",
+    "scallions": "小葱",
+    "sea": "海",
+    "seeds": "籽",
+    "sesame": "芝麻",
+    "sharp": "浓味",
+    "shrimp": "虾",
+    "skim": "脱脂",
+    "skinless": "去皮",
+    "sodium": "钠",
+    "soup": "汤",
+    "sour": "酸",
+    "soy": "酱油",
+    "spray": "喷雾",
+    "stock": "高汤",
+    "sugar": "糖",
+    "swiss": "瑞士",
+    "thighs": "腿肉",
+    "tomato": "番茄",
+    "tomatoes": "番茄",
+    "turkey": "火鸡",
+    "vanilla": "香草",
+    "vegetable": "植物",
+    "water": "水",
+    "wheat": "小麦",
+    "white": "白",
+    "whole": "整",
+    "wine": "葡萄酒",
+    "wings": "翅",
+    "yolks": "蛋黄",
+}
+
+_INGREDIENT_PHRASE_LABELS = {
+    "boneless skinless chicken breasts": "无骨去皮鸡胸肉",
+    "boneless skinless chicken breast": "无骨去皮鸡胸肉",
+    "boneless skinless chicken breast halves": "无骨去皮鸡胸肉",
+    "boneless skinless chicken thighs": "无骨去皮鸡腿肉",
+    "boneless chicken breasts": "无骨鸡胸肉",
+    "boneless chicken breast": "无骨鸡胸肉",
+    "chicken breasts": "鸡胸肉",
+    "chicken breast": "鸡胸肉",
+    "chicken thighs": "鸡腿肉",
+    "chicken wings": "鸡翅",
+    "chicken broth": "鸡汤",
+    "chicken stock": "鸡高汤",
+    "low sodium chicken broth": "低钠鸡汤",
+    "reduced-sodium chicken broth": "低钠鸡汤",
+    "cream of chicken soup": "奶油鸡汤",
+    "condensed cream of chicken soup": "浓缩奶油鸡汤",
+    "cooked chicken": "熟鸡肉",
+    "cooked chicken breasts": "熟鸡胸肉",
+    "ground chicken": "鸡肉末",
+    "whole chicken": "整鸡",
+    "whole chickens": "整鸡",
+}
 
 
 def _existing_offline_file(primary: Path, fallback: Optional[Path] = None) -> Path:
@@ -137,6 +292,120 @@ def _json_safe_value(value):
 
 def _json_safe_records(df: pd.DataFrame) -> list[dict]:
     return [{key: _json_safe_value(value) for key, value in row.items()} for row in df.to_dict(orient="records")]
+
+
+def _ingredient_catalog(path: Path) -> tuple[list[dict], dict[str, str], Path]:
+    path = _existing_offline_file(path)
+    token = f"{path}:{path.stat().st_mtime_ns}:{path.stat().st_size}"
+    cached = _ingredient_map_cache.get(str(path))
+    if isinstance(cached, dict) and cached.get("token") == token:
+        return cached["items"], cached["zh_to_en"], path
+
+    try:
+        df = pd.read_csv(path, sep="\t", encoding="utf-8-sig")
+        _require_columns(df, {"ingredient", "count", "translated_ingredient"}, path.name)
+    except ValueError as exc:
+        logger.error("Ingredient translation file has invalid format %s: %s", path, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"{path.name} 格式无效") from exc
+    except Exception as exc:
+        logger.error("Failed to read ingredient translations %s: %s", path, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="食材映射读取失败") from exc
+
+    df = df.fillna("")
+    records: list[dict] = []
+    zh_to_en: dict[str, str] = {}
+    for row in df.to_dict(orient="records"):
+        name = str(row.get("ingredient") or "").strip().lower()
+        raw_label = str(row.get("translated_ingredient") or "").strip()
+        label = _clean_ingredient_label(name, raw_label)
+        if not name or not label:
+            continue
+        count_value = pd.to_numeric(row.get("count"), errors="coerce")
+        count = 0 if pd.isna(count_value) else int(count_value)
+        records.append({"name": name, "label": label, "count": count})
+        zh_to_en.setdefault(label.lower(), name)
+        zh_to_en.setdefault(name.lower(), name)
+
+    items = sorted(records, key=lambda item: (-item["count"], item["label"], item["name"]))
+    _ingredient_map_cache[str(path)] = {"token": token, "items": items, "zh_to_en": zh_to_en}
+    return items, zh_to_en, path
+
+
+def _clean_ingredient_label(name: str, label: str) -> str:
+    normalized = str(name or "").strip().lower()
+    if normalized in _INGREDIENT_PHRASE_LABELS:
+        return _INGREDIENT_PHRASE_LABELS[normalized]
+
+    label = str(label or "").strip()
+    if label and not re.search(r"[A-Za-z/]", label):
+        return label
+
+    generated = _label_from_english_ingredient(normalized)
+    if generated:
+        return generated
+    return ""
+
+
+def _label_from_english_ingredient(name: str) -> str:
+    parts = [part for part in re.split(r"[\s_/&(),'-]+", name.lower()) if part and part not in {"and", "of", "the"}]
+    labels: list[str] = []
+    for part in parts:
+        translated = _INGREDIENT_WORD_LABELS.get(part)
+        if not translated:
+            return ""
+        if not labels or labels[-1] != translated:
+            labels.append(translated)
+    text = "".join(labels)
+    return text if text else ""
+
+
+def _map_ingredient_terms(values: list[str]) -> list[str]:
+    if not values:
+        return []
+    _, zh_to_en, _ = _ingredient_catalog(OFFLINE_INGREDIENT_TRANSLATION_PATH)
+    mapped: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        mapped.append(zh_to_en.get(text.lower(), text.lower()))
+    return sorted(set(mapped))
+
+
+def _rank_ingredient_matches(items: list[dict], query: str) -> list[dict]:
+    if not query:
+        return _dedupe_ingredient_labels(items)
+
+    def sort_key(item: dict) -> tuple[int, int, int, int, str]:
+        label = str(item.get("label") or "").lower()
+        name = str(item.get("name") or "").lower()
+        if label == query:
+            match_rank = 0
+        elif label.startswith(query):
+            match_rank = 1
+        elif query in label:
+            match_rank = 2
+        elif name == query:
+            match_rank = 3
+        elif name.startswith(query):
+            match_rank = 4
+        else:
+            match_rank = 5
+        return (match_rank, len(label), -int(item.get("count") or 0), len(name), label)
+
+    return _dedupe_ingredient_labels(sorted(items, key=sort_key))
+
+
+def _dedupe_ingredient_labels(items: list[dict]) -> list[dict]:
+    deduped: list[dict] = []
+    seen: set[str] = set()
+    for item in items:
+        label = str(item.get("label") or "").strip().lower()
+        if not label or label in seen:
+            continue
+        seen.add(label)
+        deduped.append(item)
+    return deduped
 
 
 def _require_columns(df: pd.DataFrame, required: set[str], artifact_name: str) -> None:
@@ -1097,8 +1366,10 @@ async def cold_start_recipes(payload: ColdStartRequest):
     """Recommend recipes from explicit new-user preferences."""
     from recommendation.cold_start import cold_start_recommend
 
+    params = payload.model_dump()
+    params["ingredients"] = _map_ingredient_terms(list(payload.ingredients))
     result = cold_start_recommend(
-        **payload.model_dump(),
+        **params,
         profile_path=OFFLINE_MOVIE_PROFILE_PATH,
         metadata_path=OFFLINE_RECIPE_METADATA_PATH,
     )
@@ -1154,7 +1425,7 @@ async def scenario_recommend_recipes(payload: ScenarioRecommendRequest):
         raise HTTPException(status_code=400, detail=f"不支持的推荐场景：{payload.scenario}")
 
     preferred_tags = list(payload.preferred_tags)
-    ingredients = list(payload.ingredients)
+    ingredients = _map_ingredient_terms(list(payload.ingredients))
     dietary_goals = list(payload.dietary_goals)
     max_minutes = payload.max_minutes
     min_rating = payload.min_rating
@@ -1191,6 +1462,27 @@ async def scenario_recommend_recipes(payload: ScenarioRecommendRequest):
             "mode": "content_cold_start",
             "preference_profile": result.get("preference_profile", {}),
         },
+    )
+
+
+@router.get("/recipes/ingredients", response_model=IngredientSearchResponse)
+async def recipe_ingredients(
+    q: str = Query(default="", description="食材关键词，留空返回高频食材"),
+    limit: int = Query(default=30, ge=1, le=200),
+):
+    """Return frequent recipe ingredients for ingredient input autocomplete."""
+    query = q.strip().lower()
+    items, _, path = _ingredient_catalog(OFFLINE_INGREDIENT_TRANSLATION_PATH)
+    if query:
+        matched = [item for item in items if query in item["label"].lower() or query in item["name"]]
+    else:
+        matched = items
+    ranked = _rank_ingredient_matches(matched, query)
+    return IngredientSearchResponse(
+        ingredients=ranked[:limit],
+        total=len(ranked),
+        source=_display_path(path),
+        query=query,
     )
 
 

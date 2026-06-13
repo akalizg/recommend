@@ -161,11 +161,11 @@ def client(tmp_path, monkeypatch):
     )
     metadata = tmp_path / "recipe_metadata.csv"
     metadata.write_text(
-        "recipe_id,minutes,n_steps,n_ingredients,calories,total_fat_pct,sugar_pct,sodium_pct,"
+        "recipe_id,minutes,n_steps,n_ingredients,ingredients,calories,total_fat_pct,sugar_pct,sodium_pct,"
         "protein_pct,saturated_fat_pct,carbohydrates_pct\n"
-        "10,30,5,6,250,8,4,15,65,4,12\n"
-        "11,60,8,5,520,20,70,25,8,12,65\n"
-        "12,45,7,7,360,14,6,18,55,8,20\n",
+        "10,30,5,6,chicken|salt|onion,250,8,4,15,65,4,12\n"
+        "11,60,8,5,apple|sugar|butter,520,20,70,25,8,12,65\n"
+        "12,45,7,7,chicken|potato|onion,360,14,6,18,55,8,20\n",
         encoding="utf-8",
     )
     users = tmp_path / "user_profile.csv"
@@ -174,13 +174,24 @@ def client(tmp_path, monkeypatch):
         "1,12,4.2,Soup|Dinner\n",
         encoding="utf-8",
     )
+    ingredient_translation = tmp_path / "ingredient_frequency_translated.tsv"
+    ingredient_translation.write_text(
+        "ingredient\tcount\ttranslated_ingredient\n"
+        "chicken\t2\t鸡肉\n"
+        "onion\t2\t洋葱\n"
+        "apple\t1\t苹果\n"
+        "potato\t1\t土豆\n",
+        encoding="utf-8",
+    )
     monkeypatch.setattr(routes, "OFFLINE_RECOMMENDATIONS_PATH", recs)
     monkeypatch.setattr(routes, "OFFLINE_MOVIE_PROFILE_PATH", movies)
     monkeypatch.setattr(routes, "OFFLINE_RECIPE_DETAIL_PATH", detail)
     monkeypatch.setattr(routes, "OFFLINE_RECIPE_METADATA_PATH", metadata)
+    monkeypatch.setattr(routes, "OFFLINE_INGREDIENT_TRANSLATION_PATH", ingredient_translation)
     monkeypatch.setattr(routes, "OFFLINE_USER_PROFILE_PATH", users)
     monkeypatch.setattr(get_settings(), "auth_db_path", str(tmp_path / "auth_users.db"))
     routes._faiss_similarity_cache.clear()
+    routes._ingredient_map_cache.clear()
 
     # Wire mock services
     _app_state.pipeline = MockPipeline()
@@ -424,7 +435,7 @@ class TestAPIEndpoints:
             "/recipes/scenario-recommend",
             json={
                 "scenario": "ingredients",
-                "ingredients": ["chicken"],
+                "ingredients": ["鸡肉"],
                 "require_image": False,
                 "limit": 2,
             },
@@ -433,7 +444,17 @@ class TestAPIEndpoints:
         data = resp.json()
         assert data["scenario"] == "ingredients"
         assert data["context"]["mode"] == "content_cold_start"
+        assert data["context"]["preference_profile"]["ingredients"] == ["chicken"]
         assert data["recommendations"][0]["movie_id"] in {10, 12}
+
+    def test_recipe_ingredients(self, client):
+        resp = client.get("/recipes/ingredients?q=chick&limit=5")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["query"] == "chick"
+        assert data["total"] >= len(data["ingredients"])
+        assert 0 < len(data["ingredients"]) <= 5
+        assert all("chick" in item["name"] for item in data["ingredients"])
 
     def test_offline_metrics_and_ablation(self, client, tmp_path, monkeypatch):
         from api import routes

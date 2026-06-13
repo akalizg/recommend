@@ -36,6 +36,7 @@ METADATA_COLS = [
     "minutes",
     "n_steps",
     "n_ingredients",
+    "ingredients",
     "calories",
     "total_fat_pct",
     "sugar_pct",
@@ -79,6 +80,10 @@ def cold_start_recommend(
 
     if min_rating is not None:
         df = df[df["movie_avg_rating"] >= float(min_rating)].copy()
+    if max_minutes is not None and max_minutes > 0:
+        df = df[df["minutes"].notna() & (df["minutes"] <= float(max_minutes))].copy()
+    if ingredient_terms:
+        df = _filter_by_ingredients(df, ingredient_terms)
     if require_image:
         df = df[df["has_image"] > 0].copy()
 
@@ -180,10 +185,21 @@ def _normalize_terms(values: list[str]) -> list[str]:
 
 
 def _combined_text(df: pd.DataFrame) -> pd.Series:
-    columns = [col for col in ["title", "clean_title", "genres", "tag_text"] if col in df.columns]
+    columns = [col for col in ["title", "clean_title", "genres", "tag_text", "ingredients"] if col in df.columns]
     if not columns:
         return pd.Series([""] * len(df), index=df.index)
     return df[columns].fillna("").astype(str).agg(" ".join, axis=1).str.lower()
+
+
+def _filter_by_ingredients(df: pd.DataFrame, terms: list[str]) -> pd.DataFrame:
+    if "ingredients" not in df.columns or not terms:
+        return df
+    ingredients = df["ingredients"].fillna("").astype(str).str.lower()
+    mask = pd.Series(False, index=df.index)
+    for term in terms:
+        pattern = rf"(?:^|\|){re.escape(term)}(?:\||$)"
+        mask = mask | ingredients.str.contains(pattern, regex=True, na=False)
+    return df[mask].copy()
 
 
 def _numeric_column(df: pd.DataFrame, column: str, default: float = 0.0) -> pd.Series:

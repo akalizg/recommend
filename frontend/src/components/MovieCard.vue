@@ -9,6 +9,7 @@
         :alt="title"
         class="h-full w-full object-cover transition duration-300 group-hover:scale-105"
         loading="lazy"
+        @error="useFallbackImage"
       />
       <div class="absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-slate-950/90 to-transparent"></div>
 
@@ -92,4 +93,9 @@ const metaDisplay = computed(() => {
 });
 
 const visibleTags = computed(() => recipeTags(props.movie).slice(0, 2));
+
+function useFallbackImage(event) {
+  if (event.currentTarget.src.endsWith("/recipe-covers/default.png")) return;
+  event.currentTarget.src = "/recipe-covers/default.png";
+}
 </script>

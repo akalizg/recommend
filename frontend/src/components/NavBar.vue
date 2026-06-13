@@ -1,9 +1,9 @@
 ﻿<template>
-  <nav class="bg-gray-800 border-b border-gray-700 sticky top-0 z-50">
-    <div class="max-w-7xl mx-auto px-4">
-      <div class="flex items-center justify-between h-14">
-        <router-link to="/" class="flex items-center gap-2 text-primary-400 font-bold text-lg">
-          <span>食谱推荐系统</span>
+  <nav class="sticky top-0 z-50 border-b border-gray-700 bg-gray-800/95 backdrop-blur">
+    <div class="mx-auto max-w-[1200px] px-4 md:px-6">
+      <div class="flex h-16 items-center justify-between">
+        <router-link to="/" class="flex items-center">
+          <img src="/logo.png" alt="今天吃什么？" class="h-10 w-auto object-contain" />
         </router-link>
 
         <div class="hidden items-center gap-6 text-sm md:flex">
@@ -26,14 +26,14 @@
           <router-link
             v-if="!currentUser"
             to="/login"
-            class="rounded-lg bg-primary-600 px-3 py-1.5 font-medium text-white transition-colors hover:bg-primary-500"
+            class="rounded-full bg-primary-600 px-4 py-2 font-medium text-white transition-colors hover:bg-primary-500"
           >
             登录
           </router-link>
           <button
             v-else
             @click="logout"
-            class="rounded-lg border border-slate-700 px-3 py-1.5 text-slate-300 transition-colors hover:border-slate-500"
+            class="rounded-full border border-slate-700 px-4 py-2 text-slate-300 transition-colors hover:border-slate-500"
           >
             退出
           </button>
