@@ -72,21 +72,21 @@ const reviewCount = computed(() =>
 
 const ratingBadge = computed(() => {
   if (ratingValue.value !== null && ratingValue.value > 0) return ratingValue.value.toFixed(1);
-  return "Recipe";
+  return "菜谱";
 });
 
 const reviewDisplay = computed(() => {
   if (reviewCount.value !== null && reviewCount.value > 0) {
     const count = Math.trunc(reviewCount.value).toLocaleString();
-    return `${count} ${reviewCount.value === 1 ? "review" : "reviews"}`;
+    return `${count} 条评价`;
   }
-  if (ratingValue.value !== null && ratingValue.value > 0) return `${ratingValue.value.toFixed(1)} stars`;
+  if (ratingValue.value !== null && ratingValue.value > 0) return `${ratingValue.value.toFixed(1)} 分`;
   return "Food.com";
 });
 
 const metaDisplay = computed(() => {
   if (props.movie.ready_in_display) return props.movie.ready_in_display;
-  if (props.movie.minutes) return `${props.movie.minutes} min`;
+  if (props.movie.minutes) return `${props.movie.minutes} 分钟`;
   if (props.movie.year) return String(Math.trunc(props.movie.year));
   return "Food.com";
 });

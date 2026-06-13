@@ -21,7 +21,7 @@ import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_TRAIN = PROJECT_ROOT / "data" / "rank" / "rank_train.csv"
-DEFAULT_CANDIDATES = PROJECT_ROOT / "data" / "rank" / "rank_candidates_optimized.csv"
+DEFAULT_CANDIDATES = PROJECT_ROOT / "data" / "rank" / "rank_candidates.csv"
 DEFAULT_FEATURES = PROJECT_ROOT / "data" / "rank" / "rank_feature_columns.json"
 DEFAULT_USER_PROFILE = PROJECT_ROOT / "data" / "features" / "user_profile.csv"
 DEFAULT_MOVIE_PROFILE = PROJECT_ROOT / "data" / "features" / "movie_profile.csv"
@@ -390,19 +390,15 @@ def _fit_models(train: pd.DataFrame, valid: pd.DataFrame, feature_columns: list[
         else:
             auc = 0.0
             loss = 0.0
-        eval_df = valid[["userId", "movieId", "label"]].copy()
-        eval_df["score"] = prob
-        rank_metrics = _ranking_metrics(eval_df, "score", 10)
         row = {
             "model": name,
             "auc": auc,
             "accuracy": float(accuracy_score(y_valid, prob >= 0.5)),
             "logloss": loss,
-            **rank_metrics,
         }
         results.append(row)
         trained[name] = (model, model_kind)
-    comparison = pd.DataFrame(results).sort_values(["ndcg_at_10", "auc", "model"], ascending=[False, False, True])
+    comparison = pd.DataFrame(results).sort_values(["auc", "logloss", "model"], ascending=[False, True, True])
     best_name = str(comparison.iloc[0]["model"])
     best_model, best_kind = trained[best_name]
     return comparison, best_name, best_model, best_kind, joblib
@@ -522,9 +518,8 @@ def train_enhanced_ranker(
         "best_model": best_name,
         "best_model_kind": best_kind,
         "best_valid_auc": float(comparison.iloc[0]["auc"]),
-        "best_valid_ndcg_at_10": float(comparison.iloc[0]["ndcg_at_10"]),
-        "best_valid_precision_at_10": float(comparison.iloc[0]["precision_at_10"]),
-        "best_valid_recall_at_10": float(comparison.iloc[0]["recall_at_10"]),
+        "best_valid_accuracy": float(comparison.iloc[0]["accuracy"]),
+        "best_valid_logloss": float(comparison.iloc[0]["logloss"]),
         "candidate_rows_scored": int(len(candidates_enhanced)),
         "ranked_rows": int(len(ranked)),
         "ranked_user_count": int(ranked["userId"].nunique()),
@@ -539,7 +534,8 @@ def train_enhanced_ranker(
 
     logger.info("best model: %s", best_name)
     logger.info("valid AUC: %.6f", metrics["best_valid_auc"])
-    logger.info("valid NDCG@10: %.6f", metrics["best_valid_ndcg_at_10"])
+    logger.info("valid Accuracy: %.6f", metrics["best_valid_accuracy"])
+    logger.info("valid LogLoss: %.6f", metrics["best_valid_logloss"])
     logger.info("ranked rows: %s", metrics["ranked_rows"])
     logger.info("quality validation result: success")
     return metrics

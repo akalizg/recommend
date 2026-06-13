@@ -8,7 +8,7 @@ const COVER_RULES = [
 ];
 
 export function recipeTitle(item = {}) {
-  return item.title || item.movie_title || item.name || "Untitled recipe";
+  return item.title || item.movie_title || item.name || "未命名菜谱";
 }
 
 export function recipeTags(item = {}) {

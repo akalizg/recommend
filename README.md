@@ -356,7 +356,7 @@ Kafka 反馈事件 / Redis 实时画像 / FAISS 实时推荐缓存
 12. 导出排序特征，包含召回分数、画像特征、用户-食谱交叉特征、热门度、评分、图片可用性、评论数、时间和营养等特征。
 13. 训练基础 XGBoost 排序模型，作为排序基线。
 14. 在已有 `data/rank/` 训练数据上训练增强排序模型，对比 XGBoost、LightGBM 和逻辑回归排序基线。
-15. 根据验证集结果选择 LightGBM 作为当前主排序模型，验证集 AUC 达到 `0.980079`，NDCG@10 达到 `1.000000`。
+15. 根据验证集结果选择 LightGBM 作为当前主排序模型，验证集 AUC 达到 `0.980079`，LogLoss 为 `0.082833`。
 16. 使用选出的 LightGBM 模型对全量 2,507,600 条候选打分，生成覆盖 25,076 个用户的 Top50 候选结果。
 17. 使用 MMR 进行多样性重排，得到最终 Top10 推荐。
 18. 生成模板推荐理由，让推荐结果具备可解释性。
@@ -380,7 +380,8 @@ Prefix: offline/latest
 
 在线服务主要由 FastAPI 提供：
 
-- 推荐接口读取离线生成的推荐结果。
+- 个性化推荐接口读取离线生成的 `LightGBM + MMR` 推荐结果。
+- 统一场景推荐接口 `/recipes/scenario-recommend` 支持个性化、食材、健康、快手菜和探索推荐。
 - 详情接口优先读取 Elasticsearch。
 - 搜索接口优先读取 Elasticsearch。
 - 相似食谱接口使用 ALS embedding + FAISS HNSW 近邻。
@@ -388,6 +389,18 @@ Prefix: offline/latest
 - 曝光接口记录推荐展示日志。
 - A/B 接口返回稳定实验分组。
 - 监控接口输出 Prometheus 文本指标。
+
+当前在线推荐已经不只是“输入用户 ID 返回一组推荐”，而是按不同使用场景拆分为多种推荐入口：
+
+| 场景 | 接口参数 `scenario` | 推荐来源 | 说明 |
+| --- | --- | --- | --- |
+| 个性化推荐 | `personalized` | 离线 `LightGBM + MMR` 最终推荐 | 根据用户历史交互生成个性化 TopN。若用户请求 Top20/Top50，而最终 MMR Top10 不足，会从 LightGBM Top50 候选继续补齐。 |
+| 食材推荐 / 冰箱推荐 | `ingredients` | 内容画像冷启动推荐 | 根据用户输入的食材，例如 `chicken, egg, potato`，匹配标题、标签、配料和热门质量信号。 |
+| 健康目标推荐 | `healthy` | 内容画像 + 营养特征 | 根据低卡、高蛋白、低脂、低糖、低钠等饮食目标生成推荐。 |
+| 快手菜推荐 | `quick` | 内容画像 + 制作时间特征 | 根据最大烹饪时间和餐别标签推荐 15/30/45/60 分钟内适合制作的食谱。 |
+| 探索推荐 | `explore` | LightGBM Top50 二次重排 | 在个性化候选中加入新颖度、图片可用性、热门度、评分和多样性惩罚，让推荐结果不只重复用户历史偏好。 |
+
+统一场景推荐接口的优势是：前端只需要调用一个入口，后端根据场景自动选择离线推荐、内容冷启动或探索重排链路，既保留推荐算法资产，也让系统表现更像真实食谱推荐产品。
 
 ### 4. 实时反馈与实时推荐路线
 
@@ -695,9 +708,8 @@ Logistic Regression
 | 特征数 | 60 |
 | 新增增强特征数 | 29 |
 | Validation AUC | 0.980079 |
-| Validation NDCG@10 | 1.000000 |
-| Validation Precision@10 | 0.607672 |
-| Validation Recall@10 | 0.813516 |
+| Validation Accuracy | 0.966324 |
+| Validation LogLoss | 0.082833 |
 | 打分候选数 | 2,507,600 |
 | 生成增强排序 Top50 | 1,253,800 |
 | 覆盖用户数 | 25,076 |
@@ -780,11 +792,27 @@ quick chicken soup with buttermilk dumplings
 
 ### 1. 首页
 
-首页展示系统入口、热门食谱和推荐相关内容，用于快速进入推荐、搜索和详情浏览流程。
+首页展示系统入口、热门食谱、数据规模和主要技术栈，用于快速进入推荐控制台、搜索和详情浏览流程。当前首页已经更新为食谱推荐系统展示，不再使用电影推荐系统文案。首页展示的核心信息包括：
+
+- 食谱规模：约 178K。
+- 用户规模：约 25K。
+- 最终 Top10 推荐规模：约 250K。
+- 当前主排序模型 AUC：约 0.980。
+- 技术栈：FastAPI、Spark、FAISS HNSW、LightGBM、Redis、Elasticsearch、Vue 3、Food.com。
 
 ### 2. 推荐页
 
-推荐页根据用户 ID 展示个性化推荐食谱。每个推荐卡片包含：
+推荐页已经改为多场景食谱推荐控制台，不再只是输入用户 ID 的单一推荐演示。当前推荐页支持以下模式：
+
+| 前端模式 | 后端场景 | 页面输入 | 推荐逻辑 |
+| --- | --- | --- | --- |
+| Personalized | `personalized` | 登录账号绑定的 Food.com User ID、TopK | 读取 `LightGBM + MMR` 离线个性化推荐，不足 TopK 时用 LightGBM Top50 补齐。 |
+| Pantry | `ingredients` | 食材文本、食材快捷按钮、TopK、是否优先有图 | 根据食材、标签、评分、热度、图片和多样性做内容冷启动推荐。 |
+| Healthy | `healthy` | 健康目标按钮、TopK、是否优先有图 | 根据低卡、高蛋白、低脂、低糖、低钠等营养目标推荐。 |
+| Quick meals | `quick` | 最大制作时间、餐别标签、TopK、是否优先有图 | 根据制作时间、快手标签和食谱质量信号推荐。 |
+| Explore | `explore` | 登录账号绑定的 Food.com User ID、探索强度滑杆、TopK | 在用户 LightGBM Top50 候选中按探索强度做新颖度和多样性重排。 |
+
+每个推荐卡片包含：
 
 - 食谱标题。
 - 图片。
@@ -793,11 +821,26 @@ quick chicken soup with buttermilk dumplings
 - 评论/评分数量。
 - 标签或简要信息。
 
-### 3. 搜索页
+推荐页顶部会展示当前链路标签，例如 `LightGBM main ranker`、`MMR Top10`、`Content cold start`，用于说明当前推荐系统不是单一路径，而是由个性化排序、内容冷启动和探索重排共同组成。
+
+### 3. 登录注册页
+
+前端已新增简单登录注册页：
+
+- 注册时填写用户名、密码、显示名。
+- 注册时绑定一个 Food.com User ID，用于个性化推荐和反馈闭环。
+- 密码由后端使用 PBKDF2 哈希后写入 SQLite，不明文保存。
+- 登录后前端把账号信息保存到浏览器本地缓存。
+- 导航栏会显示当前登录用户和绑定的 Food.com User ID。
+- 推荐页、探索推荐和反馈按钮会自动使用当前登录账号绑定的 `user_id`。
+
+该登录注册用于课程设计和演示场景，重点是解决“前端反馈不知道当前用户是谁”的问题。
+
+### 4. 搜索页
 
 搜索页通过 Elasticsearch 查询食谱，支持根据关键词搜索标题、标签、配料等内容。搜索接口优先读取 ES，速度比直接扫描 CSV 更快。
 
-### 4. 食谱详情页
+### 5. 食谱详情页
 
 详情页已经扩展为真正的菜谱详情页，展示：
 
@@ -817,21 +860,21 @@ quick chicken soup with buttermilk dumplings
 
 相似食谱来自 ALS embedding + FAISS HNSW 近邻。
 
-### 5. 热门食谱组件
+### 6. 热门食谱组件
 
 热门食谱根据食谱评分和交互数量展示，用于首页或兜底推荐。
 
-### 6. 反馈交互
+### 7. 反馈交互
 
-前端可调用后端反馈接口记录：
+推荐页已经接入前端反馈按钮。用户登录后，每张推荐卡片下方会展示：
 
-- 点击。
-- 喜欢。
-- 不喜欢。
-- 评分。
-- 曝光。
+- `Like`：写入 `feedback_type=like`。
+- `Dislike`：写入 `feedback_type=dislike`。
+- `1-5` 评分按钮：写入 `feedback_type=rating` 和 `feedback_value`。
 
-这些数据会进入 Kafka 反馈链路，消费端可更新 Redis 实时画像，并基于 FAISS 相似食谱生成实时推荐缓存。
+这些操作会调用后端 `/feedback` 接口，记录用户 ID、食谱 ID、反馈类型、评分值、推荐位置、模型分数和推荐理由。后端会先写入 SQLite 反馈日志，并更新 Redis 实时画像；如果 Kafka 已启动，还会把反馈事件发送到 `recipe_feedback` topic。Kafka 消费端可继续更新 Redis 实时画像，并基于 FAISS 相似食谱生成实时推荐缓存。
+
+如果没有启动 Kafka，接口仍然可用，只是返回中的 `kafka_sent=false`，表示该条反馈已完成本地日志和 Redis 更新，但没有进入 Kafka 消息队列。
 
 ## 十、后端接口
 
@@ -839,7 +882,10 @@ quick chicken soup with buttermilk dumplings
 
 | 接口 | 用途 |
 | --- | --- |
+| `POST /auth/register` | 注册本地演示账号，并绑定 Food.com 推荐用户 ID |
+| `POST /auth/login` | 登录本地演示账号，返回账号信息和绑定的推荐用户 ID |
 | `GET /recipes/recommend/{user_id}` | 获取用户个性化食谱推荐 |
+| `POST /recipes/scenario-recommend` | 统一多场景推荐接口，支持个性化、食材、健康、快手菜和探索推荐 |
 | `GET /recipes/popular` | 获取热门食谱 |
 | `POST /recipes/cold-start` | 根据新用户显式偏好生成冷启动推荐 |
 | `GET /recipe/{id}` | 获取食谱详情 |
@@ -850,6 +896,68 @@ quick chicken soup with buttermilk dumplings
 | `GET /ab/group/{user_id}` | 获取用户 A/B 分组 |
 | `GET /ab/metrics` | 查看 A/B 指标 |
 | `GET /metrics` | Prometheus 监控指标 |
+
+统一场景推荐接口示例：
+
+```http
+POST /recipes/scenario-recommend
+Content-Type: application/json
+```
+
+个性化推荐：
+
+```json
+{
+  "scenario": "personalized",
+  "user_id": 1535,
+  "limit": 20
+}
+```
+
+食材推荐：
+
+```json
+{
+  "scenario": "ingredients",
+  "ingredients": ["chicken", "egg"],
+  "limit": 10,
+  "require_image": true
+}
+```
+
+健康推荐：
+
+```json
+{
+  "scenario": "healthy",
+  "dietary_goals": ["healthy", "high-protein", "low-fat"],
+  "limit": 10,
+  "require_image": true
+}
+```
+
+快手菜推荐：
+
+```json
+{
+  "scenario": "quick",
+  "max_minutes": 30,
+  "preferred_tags": ["dinner"],
+  "limit": 10,
+  "require_image": true
+}
+```
+
+探索推荐：
+
+```json
+{
+  "scenario": "explore",
+  "user_id": 1535,
+  "limit": 10,
+  "exploration": 0.65
+}
+```
 
 ## 十一、关于官方测试集上 Precision/Recall/NDCG 为 0 的解释
 
@@ -969,15 +1077,15 @@ XGBoost 使用 31 个排序特征训练，训练集和验证集效果如下：
 
 增强排序新增了用户-食谱交叉特征、最近行为特征、图片/评论特征、制作时间特征和营养特征，并对比了 XGBoost、LightGBM 和 Logistic Regression。
 
-模型对比结果如下，当前按验证集 AUC 选择 LightGBM 作为主排序模型：
+模型对比结果如下。由于当前验证候选集上多个模型的 Top10 命中集合高度一致，Precision@10、Recall@10 和 NDCG@10 难以区分模型，因此模型选择表只保留 AUC、Accuracy 和 LogLoss。当前按验证集 AUC 和 LogLoss 选择 LightGBM 作为主排序模型：
 
-| 模型 | AUC | Accuracy | LogLoss | Precision@10 | Recall@10 | NDCG@10 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| LightGBM | 0.980079 | 0.966324 | 0.082833 | 0.607672 | 0.813516 | 1.000000 |
-| XGBoost depth5 lr0.08 | 0.978999 | 0.965629 | 0.085127 | 0.607672 | 0.813516 | 1.000000 |
-| XGBoost depth5 lr0.05 | 0.977997 | 0.964684 | 0.087882 | 0.607672 | 0.813516 | 1.000000 |
-| XGBoost depth4 lr0.05 | 0.976363 | 0.963211 | 0.091333 | 0.607672 | 0.813516 | 1.000000 |
-| Logistic Regression | 0.964588 | 0.889967 | 0.258185 | 0.607672 | 0.813516 | 1.000000 |
+| 模型 | AUC | Accuracy | LogLoss |
+| --- | ---: | ---: | ---: |
+| LightGBM | 0.980079 | 0.966324 | 0.082833 |
+| XGBoost depth5 lr0.08 | 0.978999 | 0.965629 | 0.085127 |
+| XGBoost depth5 lr0.05 | 0.977997 | 0.964684 | 0.087882 |
+| XGBoost depth4 lr0.05 | 0.976363 | 0.963211 | 0.091333 |
+| Logistic Regression | 0.964588 | 0.889967 | 0.258185 |
 
 本次增强排序最佳模型为 LightGBM，已经对全量 2,507,600 条候选完成打分，并输出覆盖 25,076 个用户的 Top50。输出产物包括：
 
@@ -1114,13 +1222,20 @@ tests/test_foodcom_conversion.py
 - 已选择 LightGBM 作为当前主排序模型，并已对全量候选生成 Top50，产物保存在 `data/rank/enhanced/` 和 `models/enhanced_ranker/`。
 - 已完成 MMR 多样性重排。
 - 已完成冷启动推荐，支持根据新用户偏好标签、食材、饮食目标、烹饪时间和图片要求生成初始推荐。
+- 已完成多场景推荐封装，将个性化推荐、食材推荐、健康推荐、快手菜推荐和探索推荐统一到同一个推荐接口。
+- 已完成探索推荐重排，在 LightGBM Top50 候选上结合用户偏好差异、新颖度、图片可用性、热门度、评分和多样性惩罚生成探索型结果。
+- 已完成个性化 TopK 补齐逻辑，当最终 MMR Top10 不足以满足 Top20/Top50 请求时，自动从 LightGBM Top50 候选补齐。
 - 已完成离线指标评估。
 - 已完成消融实验报告。
 
 ### 服务层
 
+- 已完成简单登录注册接口 `POST /auth/register` 和 `POST /auth/login`。
+- 已使用 SQLite 保存本地演示账号，并使用 PBKDF2 哈希保存密码。
+- 已支持账号绑定 Food.com User ID，使个性化推荐和反馈闭环有明确用户身份。
 - 已完成 FastAPI 推荐接口。
 - 已完成冷启动推荐接口 `POST /recipes/cold-start`。
+- 已完成统一场景推荐接口 `POST /recipes/scenario-recommend`。
 - 已完成食谱详情接口。
 - 已完成搜索接口。
 - 已完成相似食谱接口。
@@ -1143,7 +1258,13 @@ tests/test_foodcom_conversion.py
 ### 前端层
 
 - 首页已完成食谱主题展示。
-- 推荐页已展示食谱推荐。
+- 首页已更新当前系统规模、主排序模型和技术栈展示。
+- 已新增登录注册页，支持创建本地演示账号并绑定 Food.com User ID。
+- 导航栏已显示当前登录用户和绑定的推荐用户 ID，并支持退出登录。
+- 推荐页已从单一用户 ID 推荐页升级为多场景推荐控制台。
+- 推荐页已支持 `Personalized` 个性化推荐、`Pantry` 食材推荐、`Healthy` 健康推荐、`Quick meals` 快手菜推荐和 `Explore` 探索推荐。
+- 推荐页已支持食材快捷按钮、健康目标按钮、制作时间选择、探索强度滑杆、TopK 切换和是否优先有图。
+- 推荐页已接入前端反馈按钮，支持登录用户对推荐结果进行 `Like`、`Dislike` 和 1-5 分评分，并写入后端 `/feedback` 接口。
 - 搜索页已接入食谱搜索。
 - 详情页已展示配料、步骤、营养、人份、作者、原链接和相似食谱。
 - 卡片评分已改为真实评分字段，不再展示内部模型分数。
@@ -1159,6 +1280,10 @@ tests/test_foodcom_conversion.py
 - 已更新 README。
 - 已补充相关测试。
 - 已跑通关键编译检查和轻量测试。
+- 已完成本地联调验证：FastAPI 后端运行在 `http://localhost:8000`，Vue 前端运行在 `http://localhost:3000`，前端 `/api` 可正常代理到后端。
+- 已通过真实数据 smoke 测试：`ingredients`、`personalized`、`explore` 三类场景推荐接口均可返回结果。
+- 已通过前端代理反馈 smoke 测试：`POST http://localhost:3000/api/feedback` 可正常写入评分反馈并返回实时画像状态。
+- 已通过真实 HTTP 登录注册 smoke 测试：注册账号、登录账号、读取绑定用户 ID 并请求个性化推荐均可正常返回。
 
 ## 十四、常用命令
 
@@ -1300,7 +1425,68 @@ cd frontend
 npm run dev
 ```
 
-### 18. 测试
+前端默认运行在：
+
+```text
+http://localhost:3000
+```
+
+后端默认运行在：
+
+```text
+http://localhost:8000
+```
+
+Vite 已配置 `/api` 代理到 `http://localhost:8000`，因此前端页面可以直接调用后端接口。
+
+### 18. 场景推荐接口测试
+
+健康检查：
+
+```powershell
+Invoke-RestMethod -Uri http://localhost:8000/health | ConvertTo-Json -Depth 4
+```
+
+注册并登录演示账号：
+
+```powershell
+$username = "demo_$(Get-Date -Format 'HHmmss')"
+$register = @{ username=$username; password='secret123'; display_name='Demo User'; recipe_user_id=1535 } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri http://localhost:8000/auth/register -Body $register -ContentType 'application/json'
+
+$login = @{ username=$username; password='secret123' } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri http://localhost:8000/auth/login -Body $login -ContentType 'application/json'
+```
+
+食材推荐：
+
+```powershell
+$body = @{ scenario='ingredients'; ingredients=@('chicken','egg'); limit=3; require_image=$true } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri http://localhost:8000/recipes/scenario-recommend -Body $body -ContentType 'application/json'
+```
+
+探索推荐：
+
+```powershell
+$body = @{ scenario='explore'; user_id=1535; limit=3; exploration=0.65 } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri http://localhost:8000/recipes/scenario-recommend -Body $body -ContentType 'application/json'
+```
+
+通过前端代理测试后端：
+
+```powershell
+$body = @{ scenario='explore'; user_id=1535; limit=3; exploration=0.65 } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri http://localhost:3000/api/recipes/scenario-recommend -Body $body -ContentType 'application/json'
+```
+
+反馈接口测试：
+
+```powershell
+$body = @{ user_id=1535; movie_id=101; feedback_type='rating'; feedback_value=5; rank_position=2; score=0.8; reason='frontend feedback smoke' } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri http://localhost:3000/api/feedback -Body $body -ContentType 'application/json'
+```
+
+### 19. 测试
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests\test_foodcom_official_splits.py tests\test_content_hot_recall.py tests\test_foodcom_conversion.py -q
@@ -1335,7 +1521,7 @@ npm run build
 
 6. 升级冷启动推荐体验。
 
-   当前后端已经支持根据口味、食材、烹饪时间、饮食目标和图片要求生成冷启动推荐。后续可以把这套能力接入前端新用户引导页，并增加更多偏好维度，例如过敏原、忌口、厨房设备、预算和家庭人数。
+   当前后端已经支持根据口味、食材、烹饪时间、饮食目标和图片要求生成冷启动推荐，前端推荐控制台也已经接入食材、健康和快手菜场景。后续可以继续增加新用户引导页，并补充更多偏好维度，例如过敏原、忌口、厨房设备、预算和家庭人数。
 
 7. 建立反馈回流训练机制。
 
@@ -1355,4 +1541,4 @@ npm run build
 
 11. 前端美化。
 
-   算法链路稳定后，可以再统一调整前端模板、布局、色彩和交互体验。
+   当前前端已经完成食谱主题、多场景推荐控制台、搜索页和详情页。后续可以继续统一视觉模板、增加更精细的筛选控件、反馈按钮、推荐解释面板和指标展示面板。

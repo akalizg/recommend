@@ -13,12 +13,12 @@
 
     <div v-else-if="error" class="mx-auto max-w-2xl py-16 text-center">
       <p class="text-lg text-red-400">{{ error }}</p>
-      <router-link to="/" class="mt-4 inline-block text-emerald-300 hover:text-emerald-200">Back to Home</router-link>
+      <router-link to="/" class="mt-4 inline-block text-emerald-300 hover:text-emerald-200">返回首页</router-link>
     </div>
 
     <div v-else-if="recipe" class="mx-auto max-w-6xl">
       <router-link to="/" class="mb-5 inline-block text-sm text-slate-400 transition-colors hover:text-white">
-        Back
+        返回
       </router-link>
 
       <section class="overflow-hidden rounded-lg border border-slate-700 bg-slate-900 shadow-xl shadow-black/20">
@@ -50,18 +50,18 @@
         </div>
 
         <div class="grid gap-3 border-t border-slate-800 p-5 sm:grid-cols-2 lg:grid-cols-5">
-          <InfoBox label="Ready In" :value="recipe.ready_in_display || minutesDisplay" />
-          <InfoBox label="Yield" :value="recipe.recipe_yield_raw || recipe.serves || 'N/A'" />
-          <InfoBox label="Author" :value="recipe.author_name || 'Food.com'" />
-          <InfoBox label="Rating" :value="ratingDisplay" />
-          <InfoBox label="Reviews" :value="reviewDisplay" />
+          <InfoBox label="预计耗时" :value="recipe.ready_in_display || minutesDisplay" />
+          <InfoBox label="人份/产量" :value="recipe.recipe_yield_raw || recipe.serves || '暂无'" />
+          <InfoBox label="作者" :value="recipe.author_name || 'Food.com'" />
+          <InfoBox label="评分" :value="ratingDisplay" />
+          <InfoBox label="评价数" :value="reviewDisplay" />
         </div>
       </section>
 
       <div class="mt-6 grid gap-6 lg:grid-cols-[1fr_360px]">
         <section class="space-y-6">
           <div class="rounded-lg border border-slate-800 bg-slate-900 p-5">
-            <h2 class="text-xl font-bold text-slate-100">Ingredients</h2>
+            <h2 class="text-xl font-bold text-slate-100">配料</h2>
             <div class="mt-4 grid gap-3 sm:grid-cols-2">
               <div
                 v-for="(ingredient, index) in ingredients"
@@ -75,7 +75,7 @@
           </div>
 
           <div class="rounded-lg border border-slate-800 bg-slate-900 p-5">
-            <h2 class="text-xl font-bold text-slate-100">Steps</h2>
+            <h2 class="text-xl font-bold text-slate-100">制作步骤</h2>
             <ol class="mt-4 space-y-3">
               <li v-for="(step, index) in steps" :key="`${index}-${step}`" class="flex gap-3 rounded bg-slate-800/70 p-3">
                 <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-sm font-bold text-white">
@@ -87,7 +87,7 @@
           </div>
 
           <div v-if="similarRecipes.length" class="rounded-lg border border-slate-800 bg-slate-900 p-5">
-            <h2 class="text-xl font-bold text-slate-100">Similar Recipes</h2>
+            <h2 class="text-xl font-bold text-slate-100">相似菜谱</h2>
             <div class="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">
               <MovieCard v-for="item in similarRecipes" :key="item.movie_id" :movie="item" />
             </div>
@@ -96,7 +96,7 @@
 
         <aside class="space-y-6">
           <div class="rounded-lg border border-slate-800 bg-slate-900 p-5">
-            <h2 class="text-xl font-bold text-slate-100">Nutrition</h2>
+            <h2 class="text-xl font-bold text-slate-100">营养信息</h2>
             <div class="mt-4 space-y-3">
               <div v-for="item in nutritionItems" :key="item.label" class="flex items-center justify-between border-b border-slate-800 pb-2 text-sm">
                 <span class="text-slate-400">{{ item.label }}</span>
@@ -106,23 +106,23 @@
           </div>
 
           <div class="rounded-lg border border-slate-800 bg-slate-900 p-5">
-            <h2 class="text-xl font-bold text-slate-100">Recipe Info</h2>
+            <h2 class="text-xl font-bold text-slate-100">菜谱信息</h2>
             <dl class="mt-4 space-y-3 text-sm">
               <div class="flex justify-between gap-3">
-                <dt class="text-slate-400">Ingredients</dt>
+                <dt class="text-slate-400">配料数量</dt>
                 <dd class="text-slate-100">{{ recipe.n_ingredients ?? ingredients.length }}</dd>
               </div>
               <div class="flex justify-between gap-3">
-                <dt class="text-slate-400">Steps</dt>
+                <dt class="text-slate-400">步骤数量</dt>
                 <dd class="text-slate-100">{{ recipe.n_steps ?? steps.length }}</dd>
               </div>
               <div class="flex justify-between gap-3">
-                <dt class="text-slate-400">Photos</dt>
+                <dt class="text-slate-400">图片数量</dt>
                 <dd class="text-slate-100">{{ numberOrNA(recipe.photo_count) }}</dd>
               </div>
               <div class="flex justify-between gap-3">
-                <dt class="text-slate-400">Submitted</dt>
-                <dd class="text-slate-100">{{ recipe.submitted || recipe.year || "N/A" }}</dd>
+                <dt class="text-slate-400">提交时间</dt>
+                <dd class="text-slate-100">{{ recipe.submitted || recipe.year || "暂无" }}</dd>
               </div>
             </dl>
             <a
@@ -132,7 +132,7 @@
               rel="noopener noreferrer"
               class="mt-5 inline-flex w-full items-center justify-center rounded bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-500"
             >
-              Open on Food.com
+              打开 Food.com 原链接
             </a>
           </div>
         </aside>
@@ -151,12 +151,12 @@ import { recipeImage, recipeTags } from "../utils/recipeCover";
 const InfoBox = defineComponent({
   props: {
     label: { type: String, required: true },
-    value: { type: [String, Number], default: "N/A" },
+    value: { type: [String, Number], default: "暂无" },
   },
   setup(props) {
     return () =>
       h("div", { class: "rounded bg-slate-800/70 p-4" }, [
-        h("div", { class: "text-xl font-bold text-emerald-300" }, String(props.value || "N/A")),
+        h("div", { class: "text-xl font-bold text-emerald-300" }, String(props.value || "暂无")),
         h("div", { class: "mt-1 text-xs text-slate-400" }, props.label),
       ]);
   },
@@ -190,7 +190,7 @@ function parseJsonObject(value) {
 }
 
 function numberOrNA(value) {
-  if (value === undefined || value === null || Number.isNaN(Number(value))) return "N/A";
+  if (value === undefined || value === null || Number.isNaN(Number(value))) return "暂无";
   return Number(value).toLocaleString();
 }
 
@@ -202,12 +202,12 @@ const steps = computed(() => parseJsonList(recipe.value?.steps_json));
 
 const minutesDisplay = computed(() => {
   const minutes = recipe.value?.minutes;
-  return minutes ? `${Math.trunc(Number(minutes))} mins` : "N/A";
+  return minutes ? `${Math.trunc(Number(minutes))} 分钟` : "暂无";
 });
 
 const ratingDisplay = computed(() => {
   const rating = recipe.value?.rating_value ?? recipe.value?.avg_rating;
-  return rating !== undefined && rating !== null && !Number.isNaN(Number(rating)) ? Number(rating).toFixed(1) : "N/A";
+  return rating !== undefined && rating !== null && !Number.isNaN(Number(rating)) ? Number(rating).toFixed(1) : "暂无";
 });
 
 const reviewDisplay = computed(() => numberOrNA(recipe.value?.review_count ?? recipe.value?.rating_count));
@@ -215,17 +215,17 @@ const reviewDisplay = computed(() => numberOrNA(recipe.value?.review_count ?? re
 const nutritionItems = computed(() => {
   const nutrition = parseJsonObject(recipe.value?.nutrition_json);
   const pairs = [
-    ["Calories", nutrition.calories],
-    ["Total fat (%DV)", nutrition.total_fat_pct],
-    ["Sugar (%DV)", nutrition.sugar_pct],
-    ["Sodium (%DV)", nutrition.sodium_pct],
-    ["Protein (%DV)", nutrition.protein_pct],
-    ["Saturated fat (%DV)", nutrition.saturated_fat_pct],
-    ["Carbohydrates (%DV)", nutrition.carbohydrates_pct],
+    ["热量", nutrition.calories],
+    ["总脂肪（日需占比）", nutrition.total_fat_pct],
+    ["糖分（日需占比）", nutrition.sugar_pct],
+    ["钠（日需占比）", nutrition.sodium_pct],
+    ["蛋白质（日需占比）", nutrition.protein_pct],
+    ["饱和脂肪（日需占比）", nutrition.saturated_fat_pct],
+    ["碳水化合物（日需占比）", nutrition.carbohydrates_pct],
   ];
   return pairs.map(([label, value]) => ({
     label,
-    value: value === undefined || value === null || Number.isNaN(Number(value)) ? "N/A" : Number(value).toFixed(1),
+    value: value === undefined || value === null || Number.isNaN(Number(value)) ? "暂无" : Number(value).toFixed(1),
   }));
 });
 
@@ -241,7 +241,7 @@ onMounted(async () => {
       similarRecipes.value = [];
     }
   } catch (e) {
-    error.value = "Failed to load recipe details";
+    error.value = "菜谱详情加载失败";
   } finally {
     loading.value = false;
   }

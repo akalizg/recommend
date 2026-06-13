@@ -18,6 +18,30 @@ export function getOfflineRecommendations(userId, limit = 20) {
   return api.get(`/offline/recommendations/${userId}`, { params: { limit } });
 }
 
+export function getScenarioRecommendations(payload) {
+  return api.post("/recipes/scenario-recommend", payload);
+}
+
+export function getColdStartRecipes(payload) {
+  return api.post("/recipes/cold-start", payload);
+}
+
+export function submitFeedback(payload) {
+  return api.post("/feedback", payload);
+}
+
+export function submitRecommendationExposure(payload) {
+  return api.post("/recommendation-exposure", payload);
+}
+
+export function registerUser(payload) {
+  return api.post("/auth/register", payload);
+}
+
+export function loginUser(payload) {
+  return api.post("/auth/login", payload);
+}
+
 export function getOfflineMetrics() {
   return api.get("/offline/metrics");
 }

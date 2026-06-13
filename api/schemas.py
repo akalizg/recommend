@@ -13,6 +13,8 @@ class MovieItem(BaseModel):
     avg_rating: Optional[float] = None
     rating_count: Optional[int] = None
     review_count: Optional[int] = None
+    final_reason: str = ""
+    reason_source: str = ""
     image_url: str = ""
     ready_in_display: str = ""
     recipe_yield_raw: str = ""
@@ -108,6 +110,48 @@ class ColdStartResponse(BaseModel):
     total: int
     source: str
     preference_profile: dict
+
+
+class ScenarioRecommendRequest(BaseModel):
+    scenario: str = Field(default="personalized")
+    user_id: Optional[int] = Field(default=None, ge=1)
+    preferred_tags: List[str] = Field(default_factory=list)
+    ingredients: List[str] = Field(default_factory=list)
+    dietary_goals: List[str] = Field(default_factory=list)
+    max_minutes: Optional[int] = Field(default=None, ge=1)
+    min_rating: Optional[float] = Field(default=None, ge=0, le=5)
+    require_image: bool = True
+    exploration: float = Field(default=0.5, ge=0, le=1)
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+class ScenarioRecommendResponse(BaseModel):
+    scenario: str
+    recommendations: List[MovieItem]
+    total: int
+    source: str
+    context: dict = Field(default_factory=dict)
+
+
+class AuthRegisterRequest(BaseModel):
+    username: str = Field(..., min_length=3, max_length=32)
+    password: str = Field(..., min_length=6, max_length=128)
+    display_name: Optional[str] = Field(default=None, max_length=64)
+    recipe_user_id: Optional[int] = Field(default=1535, ge=1)
+
+
+class AuthLoginRequest(BaseModel):
+    username: str = Field(..., min_length=3, max_length=32)
+    password: str = Field(..., min_length=6, max_length=128)
+
+
+class AuthUserResponse(BaseModel):
+    account_id: int
+    username: str
+    display_name: str = ""
+    user_id: int
+    recipe_user_id: int
+    created_at: str
 
 
 class FeedbackRequest(BaseModel):

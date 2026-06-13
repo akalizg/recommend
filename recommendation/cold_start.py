@@ -60,7 +60,7 @@ def cold_start_recommend(
     metadata_path: str | Path = DEFAULT_METADATA,
 ) -> dict[str, Any]:
     if limit <= 0:
-        raise ValueError("limit must be positive")
+        raise ValueError("推荐数量必须大于 0")
 
     profile = _load_profile(Path(profile_path))
     metadata = _load_metadata(Path(metadata_path))
@@ -71,11 +71,11 @@ def cold_start_recommend(
     ingredient_terms = _normalize_terms(ingredients or [])
     goal_terms = _normalize_terms(dietary_goals or [])
 
-    df["movie_avg_rating"] = pd.to_numeric(df["movie_avg_rating"], errors="coerce").fillna(0.0)
-    df["movie_rating_count"] = pd.to_numeric(df["movie_rating_count"], errors="coerce").fillna(0.0)
-    df["movie_popularity"] = pd.to_numeric(df["movie_popularity"], errors="coerce").fillna(0.0)
-    df["has_image"] = pd.to_numeric(df.get("has_image", 0), errors="coerce").fillna(0.0)
-    df["minutes"] = pd.to_numeric(df.get("minutes", np.nan), errors="coerce")
+    df["movie_avg_rating"] = _numeric_column(df, "movie_avg_rating")
+    df["movie_rating_count"] = _numeric_column(df, "movie_rating_count")
+    df["movie_popularity"] = _numeric_column(df, "movie_popularity")
+    df["has_image"] = _numeric_column(df, "has_image")
+    df["minutes"] = _numeric_column(df, "minutes", np.nan)
 
     if min_rating is not None:
         df = df[df["movie_avg_rating"] >= float(min_rating)].copy()
@@ -83,7 +83,7 @@ def cold_start_recommend(
         df = df[df["has_image"] > 0].copy()
 
     if df.empty:
-        return {"recommendations": [], "total": 0, "source": "cold_start_content"}
+        return {"recommendations": [], "total": 0, "source": "content_cold_start"}
 
     text = _combined_text(df)
     preference_score = _term_match_score(text, terms)
@@ -120,7 +120,7 @@ def cold_start_recommend(
     return {
         "recommendations": [_item_from_row(row) for row in selected.to_dict(orient="records")],
         "total": int(len(selected)),
-        "source": "cold_start_content_hot_diverse",
+        "source": "content_cold_start_hot_diverse",
         "preference_profile": {
             "preferred_tags": preferred_tags or [],
             "ingredients": ingredients or [],
@@ -138,11 +138,11 @@ def _load_profile(path: Path) -> pd.DataFrame:
     if cached is not None:
         return cached
     if not path.exists():
-        raise FileNotFoundError(f"Recipe profile not found: {path}")
+        raise FileNotFoundError(f"食谱画像文件不存在：{path}")
     usecols = [col for col in PROFILE_COLS if col in pd.read_csv(path, nrows=0).columns]
     df = pd.read_csv(path, usecols=usecols)
     if "movieId" not in df.columns:
-        raise ValueError(f"{path} missing movieId")
+        raise ValueError(f"{path} 缺少 movieId 字段")
     df["movieId"] = pd.to_numeric(df["movieId"], errors="coerce")
     df = df.dropna(subset=["movieId"]).drop_duplicates("movieId").copy()
     df["movieId"] = df["movieId"].astype(int)
@@ -186,6 +186,12 @@ def _combined_text(df: pd.DataFrame) -> pd.Series:
     return df[columns].fillna("").astype(str).agg(" ".join, axis=1).str.lower()
 
 
+def _numeric_column(df: pd.DataFrame, column: str, default: float = 0.0) -> pd.Series:
+    if column not in df.columns:
+        return pd.Series(default, index=df.index, dtype=float)
+    return pd.to_numeric(df[column], errors="coerce").fillna(default)
+
+
 def _term_match_score(text: pd.Series, terms: list[str]) -> np.ndarray:
     if not terms:
         return np.zeros(len(text), dtype=float)
@@ -206,7 +212,7 @@ def _dietary_goal_score(df: pd.DataFrame, goals: list[str]) -> np.ndarray:
     protein = pd.to_numeric(df.get("protein_pct", np.nan), errors="coerce")
     carbs = pd.to_numeric(df.get("carbohydrates_pct", np.nan), errors="coerce")
     for goal in goals:
-        if "low calorie" in goal or "low-calorie" in goal or "低卡" in goal:
+        if "low calorie" in goal or "low-calorie" in goal or "低热量" in goal or "低卡" in goal:
             scores.append((calories <= 500).fillna(False).to_numpy(dtype=float))
         elif "high protein" in goal or "high-protein" in goal or "高蛋白" in goal:
             scores.append((protein >= protein.quantile(0.65)).fillna(False).to_numpy(dtype=float))
@@ -294,7 +300,7 @@ def _item_from_row(row: dict[str, Any]) -> dict[str, Any]:
     reviews = _safe_int(row.get("review_count"), _safe_int(row.get("movie_rating_count"), 0))
     return {
         "movie_id": recipe_id,
-        "title": _safe_text(row.get("title") or row.get("clean_title") or f"Recipe {recipe_id}"),
+        "title": _safe_text(row.get("title") or row.get("clean_title") or f"菜谱 {recipe_id}"),
         "score": round(float(score), 8),
         "genres": _safe_text(row.get("genres")),
         "avg_rating": rating,

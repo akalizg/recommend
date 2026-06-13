@@ -66,6 +66,7 @@ class Settings(BaseSettings):
     canonical_data_dir: str = str(PROJECT_ROOT / "data" / "recipe-canonical")
     tmdb_api_key: str = ""
     recommendation_db_path: str = str(PROJECT_ROOT / "data" / "recommendations.db")
+    auth_db_path: str = str(PROJECT_ROOT / "data" / "auth_users.db")
 
     # Elasticsearch
     elasticsearch_url: str = "http://localhost:9200"

@@ -32,6 +32,11 @@ from api.schemas import (
     SimilarRecipesResponse,
     ColdStartRequest,
     ColdStartResponse,
+    ScenarioRecommendRequest,
+    ScenarioRecommendResponse,
+    AuthRegisterRequest,
+    AuthLoginRequest,
+    AuthUserResponse,
     FeedbackRequest,
     FeedbackResponse,
     ExposureRequest,
@@ -55,6 +60,8 @@ OFFLINE_ABLATION_FALLBACK_PATH = PROJECT_ROOT / "data" / "eval" / "ablation_metr
 OFFLINE_USER_PROFILE_PATH = PROJECT_ROOT / "data" / "features" / "user_profile.csv"
 OFFLINE_MOVIE_PROFILE_PATH = PROJECT_ROOT / "data" / "features" / "movie_profile.csv"
 OFFLINE_RECIPE_DETAIL_PATH = PROJECT_ROOT / "data" / "recipe-canonical" / "recipe_detail_metadata.csv"
+OFFLINE_RECIPE_METADATA_PATH = PROJECT_ROOT / "data" / "recipe-canonical" / "recipe_metadata.csv"
+ENHANCED_RANKED_TOP50_PATH = PROJECT_ROOT / "data" / "rank" / "enhanced" / "ranked_top50_enhanced.csv"
 FAISS_HNSW_SPARK_INDEX_PATH = PROJECT_ROOT / "models" / "faiss_hnsw_spark.index"
 FAISS_HNSW_SPARK_IDS_PATH = PROJECT_ROOT / "models" / "faiss_hnsw_spark_ids.npy"
 FAISS_SPARK_VECTORS_PATH = PROJECT_ROOT / "data" / "faiss" / "movie_vectors.npy"
@@ -71,7 +78,7 @@ def _existing_offline_file(primary: Path, fallback: Optional[Path] = None) -> Pa
         return primary
     if fallback and fallback.exists():
         return fallback
-    raise HTTPException(status_code=404, detail=f"Offline artifact not found: {primary}")
+    raise HTTPException(status_code=404, detail=f"离线产物不存在：{primary}")
 
 
 def _read_offline_csv(primary: Path, fallback: Optional[Path] = None) -> tuple[pd.DataFrame, Path]:
@@ -80,7 +87,7 @@ def _read_offline_csv(primary: Path, fallback: Optional[Path] = None) -> tuple[p
         return pd.read_csv(path), path
     except Exception as exc:
         logger.error("Failed to read offline CSV %s: %s", path, exc, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to read offline artifact: {path.name}")
+        raise HTTPException(status_code=500, detail=f"离线产物读取失败：{path.name}")
 
 
 def _read_cached_csv(primary: Path, fallback: Optional[Path] = None) -> tuple[pd.DataFrame, Path]:
@@ -103,7 +110,7 @@ def _read_offline_json(primary: Path, fallback: Optional[Path] = None) -> tuple[
         return json.loads(path.read_text(encoding="utf-8")), path
     except Exception as exc:
         logger.error("Failed to read offline JSON %s: %s", path, exc, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to read offline summary: {path.name}")
+        raise HTTPException(status_code=500, detail=f"离线摘要读取失败：{path.name}")
 
 
 def _display_path(path: Path) -> str:
@@ -135,7 +142,7 @@ def _json_safe_records(df: pd.DataFrame) -> list[dict]:
 def _require_columns(df: pd.DataFrame, required: set[str], artifact_name: str) -> None:
     missing = sorted(required - set(df.columns))
     if missing:
-        raise HTTPException(status_code=500, detail=f"{artifact_name} missing required columns: {missing}")
+        raise HTTPException(status_code=500, detail=f"{artifact_name} 缺少必要字段：{missing}")
 
 
 def _first_profile_row(df: pd.DataFrame, id_column: str, id_value: int, artifact_name: str) -> dict:
@@ -143,7 +150,7 @@ def _first_profile_row(df: pd.DataFrame, id_column: str, id_value: int, artifact
     ids = pd.to_numeric(df[id_column], errors="coerce")
     matched = df[ids == id_value]
     if matched.empty:
-        raise HTTPException(status_code=404, detail=f"{artifact_name} not found for {id_column}={id_value}")
+        raise HTTPException(status_code=404, detail=f"{artifact_name} 中没有找到 {id_column}={id_value} 的记录")
     return _json_safe_records(matched.head(1))[0]
 
 
@@ -156,7 +163,7 @@ def _optional_recipe_detail(movie_id: int) -> dict:
         usecols = pd.read_csv(OFFLINE_RECIPE_DETAIL_PATH, nrows=0).columns.tolist()
         for chunk in pd.read_csv(OFFLINE_RECIPE_DETAIL_PATH, chunksize=50_000, usecols=usecols):
             if "recipe_id" not in chunk.columns:
-                raise HTTPException(status_code=500, detail=f"{OFFLINE_RECIPE_DETAIL_PATH.name} missing recipe_id")
+                raise HTTPException(status_code=500, detail=f"{OFFLINE_RECIPE_DETAIL_PATH.name} 缺少 recipe_id 字段")
             ids = pd.to_numeric(chunk["recipe_id"], errors="coerce")
             matched = chunk[ids == movie_id]
             if not matched.empty:
@@ -167,7 +174,7 @@ def _optional_recipe_detail(movie_id: int) -> dict:
         raise
     except Exception as exc:
         logger.error("Failed to read recipe detail row %s: %s", movie_id, exc, exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to read recipe detail metadata") from exc
+        raise HTTPException(status_code=500, detail="菜谱详情元数据读取失败") from exc
     _recipe_detail_row_cache[movie_id] = {}
     return {}
 
@@ -189,6 +196,8 @@ def build_movie_item(movie_id: int, title: str, score: float, info: Optional[dic
         avg_rating=_row_float(info, "rating_value", "avg_rating", "movie_avg_rating", default=0.0),
         rating_count=_row_int(info, "review_count", "rating_count", "movie_rating_count", default=0),
         review_count=_row_int(info, "review_count", "rating_count", "movie_rating_count", default=0),
+        final_reason=info.get("final_reason") or "",
+        reason_source=info.get("reason_source") or "",
         image_url=info.get("image_url") or "",
         ready_in_display=info.get("ready_in_display") or "",
         recipe_yield_raw=info.get("recipe_yield_raw") or "",
@@ -266,7 +275,7 @@ def _row_text(row: dict, *keys: str, default: str = "") -> str:
 def _movie_detail_from_profile(profile: dict) -> MovieDetail:
     """Map legacy internal movieId fields to a recipe detail response."""
     movie_id = _row_id(profile, "movie_id", "movieId", "recipe_id", "id")
-    title = _row_text(profile, "title", "name", "clean_title", default=f"Recipe {movie_id}")
+    title = _row_text(profile, "title", "name", "clean_title", default=f"菜谱 {movie_id}")
     genres = _row_text(profile, "genres", "movie_genres")
     avg_rating = _row_float(profile, "rating_value", "avg_rating", "movie_avg_rating")
     rating_count = _row_int(profile, "review_count", "rating_count", "movie_rating_count")
@@ -352,7 +361,7 @@ def _load_faiss_similarity_assets() -> tuple[faiss.Index, np.ndarray, np.ndarray
     ]
     missing = [str(path) for path in required if not path.exists()]
     if missing:
-        raise HTTPException(status_code=404, detail=f"FAISS recipe similarity assets not found: {missing}")
+        raise HTTPException(status_code=404, detail=f"FAISS 相似菜谱资产不存在：{missing}")
 
     token = "|".join(f"{path}:{path.stat().st_mtime_ns}:{path.stat().st_size}" for path in required)
     if _faiss_similarity_cache.get("token") == token:
@@ -369,12 +378,12 @@ def _load_faiss_similarity_assets() -> tuple[faiss.Index, np.ndarray, np.ndarray
         vectors = np.load(FAISS_SPARK_VECTORS_PATH).astype(np.float32)
     except Exception as exc:
         logger.error("Failed to load FAISS recipe similarity assets: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to load FAISS recipe similarity assets") from exc
+        raise HTTPException(status_code=500, detail="FAISS 相似菜谱资产加载失败") from exc
 
     if vectors.ndim != 2 or index_ids.ndim != 1 or vector_ids.ndim != 1:
-        raise HTTPException(status_code=500, detail="Invalid FAISS recipe similarity asset shape")
+        raise HTTPException(status_code=500, detail="FAISS 相似菜谱资产维度不正确")
     if len(index_ids) != index.ntotal or len(vector_ids) != len(vectors):
-        raise HTTPException(status_code=500, detail="FAISS recipe similarity assets are out of sync")
+        raise HTTPException(status_code=500, detail="FAISS 相似菜谱资产不一致")
 
     order = np.argsort(vector_ids)
     vector_ids_sorted = vector_ids[order]
@@ -399,7 +408,7 @@ def _recipe_query_vector(movie_id: int) -> np.ndarray:
     vectors = _faiss_similarity_cache["vectors"]
     pos = np.searchsorted(vector_ids, movie_id)
     if pos >= len(vector_ids) or int(vector_ids[pos]) != movie_id:
-        raise HTTPException(status_code=404, detail=f"Recipe {movie_id} has no FAISS vector")
+        raise HTTPException(status_code=404, detail=f"菜谱 {movie_id} 没有 FAISS 向量")
     return np.ascontiguousarray(vectors[pos : pos + 1], dtype=np.float32)
 
 
@@ -411,7 +420,7 @@ def _similar_recipe_items(movie_id: int, limit: int) -> tuple[list[MovieItem], s
         scores, positions = index.search(query, search_k)
     except Exception as exc:
         logger.error("FAISS recipe similarity search failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail="FAISS recipe similarity search failed") from exc
+        raise HTTPException(status_code=500, detail="FAISS 相似菜谱检索失败") from exc
 
     candidate_scores: list[tuple[int, float]] = []
     for score, pos in zip(scores[0], positions[0]):
@@ -433,7 +442,7 @@ def _similar_recipe_items(movie_id: int, limit: int) -> tuple[list[MovieItem], s
             if exc.status_code == 404:
                 continue
             raise
-        items.append(build_movie_item(candidate_id, f"Recipe {candidate_id}", score, profile))
+        items.append(build_movie_item(candidate_id, f"菜谱 {candidate_id}", score, profile))
         if len(items) >= limit:
             break
     return items, _display_path(FAISS_HNSW_SPARK_INDEX_PATH)
@@ -480,6 +489,209 @@ def _popular_recipe_records(limit: int, with_images_first: bool = True) -> tuple
             }
         )
     return records, path
+
+
+def _token_set(value) -> set[str]:
+    if value is None or pd.isna(value):
+        return set()
+    return {
+        part.strip().lower()
+        for part in str(value).replace(",", "|").replace("/", "|").split("|")
+        if part.strip()
+    }
+
+
+def _jaccard(left: set[str], right: set[str]) -> float:
+    if not left or not right:
+        return 0.0
+    return len(left & right) / max(len(left | right), 1)
+
+
+def _normalize_values(values: list[float]) -> list[float]:
+    if not values:
+        return []
+    arr = np.asarray(values, dtype=float)
+    arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+    low = float(arr.min())
+    high = float(arr.max())
+    if high <= low:
+        return [1.0 for _ in values]
+    return ((arr - low) / (high - low)).tolist()
+
+
+def _profile_records_by_id(recipe_ids: list[int]) -> tuple[dict[int, dict], Path]:
+    ids = {int(recipe_id) for recipe_id in recipe_ids}
+    if not ids:
+        return {}, OFFLINE_MOVIE_PROFILE_PATH
+    profiles, path = _read_cached_csv(OFFLINE_MOVIE_PROFILE_PATH)
+    _require_columns(profiles, {"movieId"}, path.name)
+    subset = profiles[pd.to_numeric(profiles["movieId"], errors="coerce").isin(ids)]
+    records = {}
+    for record in _json_safe_records(subset):
+        records[int(record["movieId"])] = record
+    return records, path
+
+
+def _personalized_recipe_items(user_id: int, limit: int) -> tuple[list[MovieItem], str, dict]:
+    try:
+        df, path = _read_cached_csv(OFFLINE_RECOMMENDATIONS_PATH)
+        _require_columns(df, {"userId", "movieId"}, path.name)
+        working = df.copy()
+        working["userId"] = pd.to_numeric(working["userId"], errors="coerce")
+        user_recs = working[working["userId"] == user_id].copy()
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+        user_recs = pd.DataFrame()
+        path = OFFLINE_RECOMMENDATIONS_PATH
+
+    if user_recs.empty:
+        popular_records, popular_path = _popular_recipe_records(limit)
+        items = [
+            build_movie_item(record["movie_id"], record["title"], float(record.get("score") or 0.0), record)
+            for record in popular_records
+        ]
+        return items, _display_path(popular_path), {"fallback": "popular", "user_id": user_id}
+
+    if "rank_position" in user_recs.columns:
+        user_recs["_rank_position"] = pd.to_numeric(user_recs["rank_position"], errors="coerce").fillna(10**9)
+        user_recs = user_recs.sort_values(["_rank_position", "movieId"], ascending=[True, True])
+    else:
+        score_col = "rank_score" if "rank_score" in user_recs.columns else "mmr_score"
+        if score_col in user_recs.columns:
+            user_recs[score_col] = pd.to_numeric(user_recs[score_col], errors="coerce").fillna(0.0)
+            user_recs = user_recs.sort_values([score_col, "movieId"], ascending=[False, True])
+
+    items: list[MovieItem] = []
+    for record in _json_safe_records(user_recs.head(limit)):
+        recipe_id = int(record["movieId"])
+        score = _row_float(record, "rank_score", "mmr_score", "recall_score", default=0.0)
+        items.append(build_movie_item(recipe_id, f"菜谱 {recipe_id}", score, record))
+
+    supplemented = False
+    if len(items) < limit and ENHANCED_RANKED_TOP50_PATH.exists():
+        ranked, ranked_path = _read_cached_csv(ENHANCED_RANKED_TOP50_PATH)
+        if {"userId", "movieId"}.issubset(set(ranked.columns)):
+            existing_ids = {item.movie_id for item in items}
+            ranked_working = ranked.copy()
+            ranked_working["userId"] = pd.to_numeric(ranked_working["userId"], errors="coerce")
+            ranked_working["movieId"] = pd.to_numeric(ranked_working["movieId"], errors="coerce")
+            ranked_user = ranked_working[
+                (ranked_working["userId"] == user_id) & (~ranked_working["movieId"].isin(existing_ids))
+            ].dropna(subset=["movieId"]).copy()
+            if not ranked_user.empty:
+                if "rank_position" in ranked_user.columns:
+                    ranked_user["_rank_position"] = pd.to_numeric(
+                        ranked_user["rank_position"], errors="coerce"
+                    ).fillna(10**9)
+                    ranked_user = ranked_user.sort_values(
+                        ["_rank_position", "rank_score", "movieId"], ascending=[True, False, True]
+                    )
+                elif "rank_score" in ranked_user.columns:
+                    ranked_user["rank_score"] = pd.to_numeric(ranked_user["rank_score"], errors="coerce").fillna(0.0)
+                    ranked_user = ranked_user.sort_values(["rank_score", "movieId"], ascending=[False, True])
+                needed = limit - len(items)
+                supplement_records = _json_safe_records(ranked_user.head(needed))
+                profile_map, _ = _profile_records_by_id([int(record["movieId"]) for record in supplement_records])
+                for record in supplement_records:
+                    recipe_id = int(record["movieId"])
+                    info = {**profile_map.get(recipe_id, {}), **record}
+                    score = _row_float(info, "rank_score", "mmr_score", "recall_score", default=0.0)
+                    items.append(build_movie_item(recipe_id, f"菜谱 {recipe_id}", score, info))
+                supplemented = True
+                path = ranked_path
+
+    return items, _display_path(path), {"fallback": None, "user_id": user_id, "supplemented_from_top50": supplemented}
+
+
+def _user_preference_terms(user_id: int) -> tuple[set[str], dict]:
+    try:
+        profiles, path = _read_cached_csv(OFFLINE_USER_PROFILE_PATH)
+        profile = _first_profile_row(profiles, "userId", user_id, path.name)
+    except HTTPException:
+        return set(), {}
+    return _token_set(profile.get("favorite_genres")), profile
+
+
+def _explore_recipe_items(user_id: int, limit: int, exploration: float) -> tuple[list[MovieItem], str, dict]:
+    ranked, path = _read_cached_csv(ENHANCED_RANKED_TOP50_PATH, OFFLINE_RECOMMENDATIONS_PATH)
+    _require_columns(ranked, {"userId", "movieId"}, path.name)
+    working = ranked.copy()
+    working["userId"] = pd.to_numeric(working["userId"], errors="coerce")
+    working["movieId"] = pd.to_numeric(working["movieId"], errors="coerce")
+    user_rows = working[working["userId"] == user_id].dropna(subset=["movieId"]).copy()
+
+    if user_rows.empty:
+        return _personalized_recipe_items(user_id, limit)
+
+    score_col = "rank_score" if "rank_score" in user_rows.columns else "mmr_score"
+    if score_col in user_rows.columns:
+        user_rows[score_col] = pd.to_numeric(user_rows[score_col], errors="coerce").fillna(0.0)
+    else:
+        user_rows[score_col] = 0.0
+    if "rank_position" in user_rows.columns:
+        user_rows["_rank_position"] = pd.to_numeric(user_rows["rank_position"], errors="coerce").fillna(10**9)
+        user_rows = user_rows.sort_values(["_rank_position", score_col, "movieId"], ascending=[True, False, True])
+    else:
+        user_rows = user_rows.sort_values([score_col, "movieId"], ascending=[False, True])
+
+    candidate_count = min(max(limit * 6, 50), len(user_rows))
+    candidate_rows = _json_safe_records(user_rows.head(candidate_count))
+    profile_map, _ = _profile_records_by_id([int(row["movieId"]) for row in candidate_rows])
+    favorite_terms, user_profile = _user_preference_terms(user_id)
+
+    merged = []
+    raw_scores = [_row_float(row, score_col, default=0.0) for row in candidate_rows]
+    pop_scores = [
+        _row_float(profile_map.get(int(row["movieId"]), {}), "movie_popularity", "popularity", default=0.0)
+        for row in candidate_rows
+    ]
+    rank_norm = _normalize_values(raw_scores)
+    pop_norm = _normalize_values(pop_scores)
+
+    for index, row in enumerate(candidate_rows):
+        recipe_id = int(row["movieId"])
+        profile = profile_map.get(recipe_id, {})
+        record = {**profile, **row}
+        recipe_terms = _token_set(record.get("genres") or record.get("movie_genres"))
+        novelty = 1.0 - _jaccard(recipe_terms, favorite_terms) if favorite_terms else 0.35
+        rating = _row_float(record, "rating_value", "movie_avg_rating", "avg_rating", default=0.0)
+        rating_norm = min(max(rating / 5.0, 0.0), 1.0)
+        has_image = 1.0 if str(record.get("image_url") or "").strip() else 0.0
+        relevance = 0.75 * rank_norm[index] + 0.25 * rating_norm
+        discovery = 0.45 * novelty + 0.25 * has_image + 0.20 * pop_norm[index] + 0.10 * rating_norm
+        record["_scenario_score"] = (1.0 - exploration) * relevance + exploration * discovery
+        record["_scenario_terms"] = recipe_terms
+        merged.append(record)
+
+    selected: list[dict] = []
+    remaining = merged
+    while remaining and len(selected) < limit:
+        def adjusted_score(record: dict) -> float:
+            if not selected:
+                return float(record["_scenario_score"])
+            overlap = max(_jaccard(record["_scenario_terms"], item["_scenario_terms"]) for item in selected)
+            return float(record["_scenario_score"]) - 0.12 * exploration * overlap
+
+        best = max(remaining, key=adjusted_score)
+        selected.append(best)
+        remaining = [record for record in remaining if int(record["movieId"]) != int(best["movieId"])]
+
+    items = [
+        build_movie_item(
+            int(record["movieId"]),
+            f"菜谱 {int(record['movieId'])}",
+            round(float(record["_scenario_score"]), 8),
+            record,
+        )
+        for record in selected
+    ]
+    return items, _display_path(path), {
+        "user_id": user_id,
+        "exploration": exploration,
+        "favorite_genres": user_profile.get("favorite_genres", ""),
+        "candidate_count": candidate_count,
+    }
 
 
 def _record_exposures(state, user_id: int, items: list[MovieItem], request_id: str, group_name: str) -> None:
@@ -547,14 +759,40 @@ async def health(state: AppState = Depends(get_state)):
     )
 
 
+# ---------- Authentication ----------
+
+@router.post("/auth/register", response_model=AuthUserResponse)
+async def auth_register(payload: AuthRegisterRequest):
+    """Create a simple local demo account and bind it to a Food.com user id."""
+    from auth.simple_auth import AuthError, SimpleAuthService
+
+    try:
+        user = SimpleAuthService().register(**payload.model_dump())
+    except AuthError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return AuthUserResponse(**user)
+
+
+@router.post("/auth/login", response_model=AuthUserResponse)
+async def auth_login(payload: AuthLoginRequest):
+    """Login a simple local demo account."""
+    from auth.simple_auth import AuthError, SimpleAuthService
+
+    try:
+        user = SimpleAuthService().login(**payload.model_dump())
+    except AuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    return AuthUserResponse(**user)
+
+
 # ---------- Recommendation ----------
 
 @router.get("/recipes/recommend/{user_id}", response_model=RecommendationResponse)
 @router.get("/recommend/{user_id}", response_model=RecommendationResponse)
 async def recommend(
     user_id: int,
-    top_k: int = Query(default=20, ge=1, le=100, description="Number of recommendations"),
-    use_cache: bool = Query(default=True, description="Use Redis cache"),
+    top_k: int = Query(default=20, ge=1, le=100, description="推荐数量"),
+    use_cache: bool = Query(default=True, description="是否使用 Redis 缓存"),
     state: AppState = Depends(get_state),
 ):
     """
@@ -602,7 +840,7 @@ async def recommend(
         for record in _json_safe_records(user_recs.head(top_k)):
             recipe_id = int(record["movieId"])
             score = _row_float(record, "rank_score", "mmr_score", "recall_score", default=0.0)
-            items.append(build_movie_item(recipe_id, f"Recipe {recipe_id}", score, record))
+            items.append(build_movie_item(recipe_id, f"菜谱 {recipe_id}", score, record))
     else:
         popular_records, _ = _popular_recipe_records(top_k)
         items = [
@@ -639,7 +877,7 @@ async def recommend(
 @router.get("/offline/recommendations/{user_id}", response_model=OfflineRecommendationsResponse)
 async def offline_recommendations(
     user_id: int,
-    limit: int = Query(default=20, ge=1, le=100, description="Number of offline recommendations"),
+    limit: int = Query(default=20, ge=1, le=100, description="离线推荐数量"),
 ):
     """Read precomputed offline recommendations for display only."""
     df, path = _read_offline_csv(OFFLINE_RECOMMENDATIONS_PATH)
@@ -648,7 +886,7 @@ async def offline_recommendations(
     df["userId"] = pd.to_numeric(df["userId"], errors="coerce")
     user_recs = df[df["userId"] == user_id].copy()
     if user_recs.empty:
-        raise HTTPException(status_code=404, detail=f"Offline recommendations not found for user {user_id}")
+        raise HTTPException(status_code=404, detail=f"没有找到用户 {user_id} 的离线推荐结果")
 
     if "rank_position" in user_recs.columns:
         user_recs["_rank_position"] = pd.to_numeric(user_recs["rank_position"], errors="coerce").fillna(10**9)
@@ -774,7 +1012,7 @@ async def offline_movie_profile(movie_id: int):
 @router.get("/offline/popular-recipes", response_model=OfflinePopularRecipesResponse)
 async def offline_popular_recipes(
     limit: int = Query(default=20, ge=1, le=100),
-    with_images_first: bool = Query(default=True, description="Prefer recipes with image_url for display."),
+    with_images_first: bool = Query(default=True, description="展示时优先返回有图片的菜谱"),
 ):
     """Read popular recipe profiles from offline recipe artifacts."""
     records, path = _popular_recipe_records(limit, with_images_first)
@@ -829,7 +1067,7 @@ async def movie_detail(
         info = _recipe_from_es(movie_id) or _offline_profile(movie_id)
     except HTTPException as exc:
         if exc.status_code == 404:
-            raise HTTPException(status_code=404, detail=f"Recipe {movie_id} not found") from exc
+            raise HTTPException(status_code=404, detail=f"菜谱 {movie_id} 不存在") from exc
         raise
     detail = _movie_detail_from_profile(info)
     if state.cache:
@@ -859,8 +1097,101 @@ async def cold_start_recipes(payload: ColdStartRequest):
     """Recommend recipes from explicit new-user preferences."""
     from recommendation.cold_start import cold_start_recommend
 
-    result = cold_start_recommend(**payload.model_dump())
+    result = cold_start_recommend(
+        **payload.model_dump(),
+        profile_path=OFFLINE_MOVIE_PROFILE_PATH,
+        metadata_path=OFFLINE_RECIPE_METADATA_PATH,
+    )
     return ColdStartResponse(**result)
+
+
+@router.post("/recipes/scenario-recommend", response_model=ScenarioRecommendResponse)
+async def scenario_recommend_recipes(payload: ScenarioRecommendRequest):
+    """Recommend recipes for product scenarios such as pantry, health, quick meals, and discovery."""
+    from recommendation.cold_start import cold_start_recommend
+
+    scenario = payload.scenario.strip().lower().replace("_", "-")
+    scenario_aliases = {
+        "personal": "personalized",
+        "user": "personalized",
+        "pantry": "ingredients",
+        "ingredient": "ingredients",
+        "fridge": "ingredients",
+        "health": "healthy",
+        "diet": "healthy",
+        "fast": "quick",
+        "quick-meal": "quick",
+        "discover": "explore",
+        "discovery": "explore",
+    }
+    scenario = scenario_aliases.get(scenario, scenario)
+
+    if scenario == "personalized":
+        if payload.user_id is None:
+            raise HTTPException(status_code=400, detail="个性化推荐需要先提供用户 ID")
+        items, source, context = _personalized_recipe_items(payload.user_id, payload.limit)
+        return ScenarioRecommendResponse(
+            scenario=scenario,
+            recommendations=items,
+            total=len(items),
+            source=source,
+            context={"mode": "offline_lightgbm_mmr", **context},
+        )
+
+    if scenario == "explore":
+        if payload.user_id is None:
+            raise HTTPException(status_code=400, detail="探索发现推荐需要先提供用户 ID")
+        items, source, context = _explore_recipe_items(payload.user_id, payload.limit, payload.exploration)
+        return ScenarioRecommendResponse(
+            scenario=scenario,
+            recommendations=items,
+            total=len(items),
+            source=source,
+            context={"mode": "lightgbm_top50_discovery_rerank", **context},
+        )
+
+    if scenario not in {"ingredients", "healthy", "quick"}:
+        raise HTTPException(status_code=400, detail=f"不支持的推荐场景：{payload.scenario}")
+
+    preferred_tags = list(payload.preferred_tags)
+    ingredients = list(payload.ingredients)
+    dietary_goals = list(payload.dietary_goals)
+    max_minutes = payload.max_minutes
+    min_rating = payload.min_rating
+
+    if scenario == "ingredients":
+        preferred_tags.extend(["main-ingredient", "easy"])
+    elif scenario == "healthy":
+        preferred_tags.extend(["healthy", "dietary"])
+        if not dietary_goals:
+            dietary_goals = ["healthy", "low-calorie", "low-fat"]
+        if min_rating is None:
+            min_rating = 4.0
+    elif scenario == "quick":
+        preferred_tags.extend(["easy", "quick", "30-minutes-or-less", "time-to-make"])
+        max_minutes = max_minutes or 30
+
+    result = cold_start_recommend(
+        preferred_tags=preferred_tags,
+        ingredients=ingredients,
+        dietary_goals=dietary_goals,
+        max_minutes=max_minutes,
+        min_rating=min_rating,
+        require_image=payload.require_image,
+        limit=payload.limit,
+        profile_path=OFFLINE_MOVIE_PROFILE_PATH,
+        metadata_path=OFFLINE_RECIPE_METADATA_PATH,
+    )
+    return ScenarioRecommendResponse(
+        scenario=scenario,
+        recommendations=result["recommendations"],
+        total=int(result["total"]),
+        source=f"{result['source']}:{_display_path(OFFLINE_MOVIE_PROFILE_PATH)}",
+        context={
+            "mode": "content_cold_start",
+            "preference_profile": result.get("preference_profile", {}),
+        },
+    )
 
 
 # ---------- User Profile ----------
@@ -872,7 +1203,7 @@ async def user_profile(
 ):
     """Get user profile: rating stats, genre preferences, history."""
     if state.user_profile_builder is None:
-        raise HTTPException(status_code=503, detail="Services not initialized")
+        raise HTTPException(status_code=503, detail="服务尚未初始化")
 
     cache_key = f"profile:{user_id}"
     if state.cache:
@@ -929,7 +1260,7 @@ async def submit_recommendation_exposure(payload: ExposureRequest, state: AppSta
 @router.get("/recipes/search", response_model=SearchResponse)
 @router.get("/search", response_model=SearchResponse)
 async def search(
-    q: str = Query(..., min_length=1, description="Search query"),
+    q: str = Query(..., min_length=1, description="搜索关键词"),
     limit: int = Query(default=20, ge=1, le=100),
     state: AppState = Depends(get_state),
 ):
@@ -971,6 +1302,6 @@ async def rebuild_index(
     elapsed = time.perf_counter() - t0
     return RebuildResponse(
         status="success",
-        message="Recipe serving caches cleared. Rebuild offline artifacts with scripts/run_recipe_pipeline.py.",
+        message="食谱推荐服务缓存已清理。如需重建离线产物，请运行 scripts/run_recipe_pipeline.py。",
         took_seconds=round(elapsed, 2),
     )

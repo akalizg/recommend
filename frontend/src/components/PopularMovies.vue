@@ -1,7 +1,7 @@
 ﻿<template>
   <div>
     <div class="flex items-center justify-between mb-4">
-      <h2 class="text-lg font-bold text-gray-100">Popular Recipes</h2>
+      <h2 class="text-lg font-bold text-gray-100">热门菜谱</h2>
       <span v-if="tookMs" class="text-xs text-gray-500">{{ tookMs }}ms</span>
     </div>
 
@@ -44,7 +44,7 @@ onMounted(async () => {
     movies.value = data.popular || [];
     tookMs.value = Math.round(performance.now() - started);
   } catch (e) {
-    error.value = "Failed to load popular recipes";
+    error.value = "热门菜谱加载失败";
   } finally {
     loading.value = false;
   }

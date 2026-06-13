@@ -159,9 +159,27 @@ def client(tmp_path, monkeypatch):
         "https://www.food.com/recipe/chicken-soup-10\n",
         encoding="utf-8",
     )
+    metadata = tmp_path / "recipe_metadata.csv"
+    metadata.write_text(
+        "recipe_id,minutes,n_steps,n_ingredients,calories,total_fat_pct,sugar_pct,sodium_pct,"
+        "protein_pct,saturated_fat_pct,carbohydrates_pct\n"
+        "10,30,5,6,250,8,4,15,65,4,12\n"
+        "11,60,8,5,520,20,70,25,8,12,65\n"
+        "12,45,7,7,360,14,6,18,55,8,20\n",
+        encoding="utf-8",
+    )
+    users = tmp_path / "user_profile.csv"
+    users.write_text(
+        "userId,user_rating_count,user_avg_rating,favorite_genres\n"
+        "1,12,4.2,Soup|Dinner\n",
+        encoding="utf-8",
+    )
     monkeypatch.setattr(routes, "OFFLINE_RECOMMENDATIONS_PATH", recs)
     monkeypatch.setattr(routes, "OFFLINE_MOVIE_PROFILE_PATH", movies)
     monkeypatch.setattr(routes, "OFFLINE_RECIPE_DETAIL_PATH", detail)
+    monkeypatch.setattr(routes, "OFFLINE_RECIPE_METADATA_PATH", metadata)
+    monkeypatch.setattr(routes, "OFFLINE_USER_PROFILE_PATH", users)
+    monkeypatch.setattr(get_settings(), "auth_db_path", str(tmp_path / "auth_users.db"))
     routes._faiss_similarity_cache.clear()
 
     # Wire mock services
@@ -186,6 +204,37 @@ class TestAPIEndpoints:
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
+
+    def test_auth_register_and_login(self, client):
+        register_resp = client.post(
+            "/auth/register",
+            json={
+                "username": "demo_user",
+                "password": "secret123",
+                "display_name": "Demo User",
+                "recipe_user_id": 1,
+            },
+        )
+        assert register_resp.status_code == 200
+        registered = register_resp.json()
+        assert registered["username"] == "demo_user"
+        assert registered["user_id"] == 1
+        assert registered["recipe_user_id"] == 1
+
+        login_resp = client.post(
+            "/auth/login",
+            json={"username": "demo_user", "password": "secret123"},
+        )
+        assert login_resp.status_code == 200
+        logged_in = login_resp.json()
+        assert logged_in["account_id"] == registered["account_id"]
+        assert logged_in["display_name"] == "Demo User"
+
+        bad_resp = client.post(
+            "/auth/login",
+            json={"username": "demo_user", "password": "wrong123"},
+        )
+        assert bad_resp.status_code == 401
 
     def test_recommend(self, client):
         resp = client.get("/recommend/1")
@@ -358,6 +407,33 @@ class TestAPIEndpoints:
         assert data["total"] == 1
         assert data["recommendations"][0]["movie_id"] == 10
         assert data["recommendations"][0]["reason_evidence"]["rank_position"] == 1
+
+    def test_scenario_personalized_recommendations(self, client):
+        resp = client.post(
+            "/recipes/scenario-recommend",
+            json={"scenario": "personalized", "user_id": 1, "limit": 2},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["scenario"] == "personalized"
+        assert data["context"]["mode"] == "offline_lightgbm_mmr"
+        assert [item["movie_id"] for item in data["recommendations"]] == [10, 11]
+
+    def test_scenario_ingredient_recommendations(self, client):
+        resp = client.post(
+            "/recipes/scenario-recommend",
+            json={
+                "scenario": "ingredients",
+                "ingredients": ["chicken"],
+                "require_image": False,
+                "limit": 2,
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["scenario"] == "ingredients"
+        assert data["context"]["mode"] == "content_cold_start"
+        assert data["recommendations"][0]["movie_id"] in {10, 12}
 
     def test_offline_metrics_and_ablation(self, client, tmp_path, monkeypatch):
         from api import routes
