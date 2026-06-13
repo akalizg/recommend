@@ -2,7 +2,6 @@
 Centralized configuration management using pydantic-settings.
 Loads from .env file and environment variables.
 """
-import os
 from pathlib import Path
 from pydantic import field_validator
 from pydantic_settings import BaseSettings
@@ -60,11 +59,8 @@ class Settings(BaseSettings):
     feature_cache_path: str = str(PROJECT_ROOT / "models" / "features.pkl")
 
     # Data
-    movielens_data_dir: str = str(PROJECT_ROOT / "data" / "ml-latest-small")
-    movielens_url: str = "https://files.grouplens.org/datasets/movielens/ml-latest-small.zip"
     foodcom_data_dir: str = str(PROJECT_ROOT / "data" / "food-com")
     canonical_data_dir: str = str(PROJECT_ROOT / "data" / "recipe-canonical")
-    tmdb_api_key: str = ""
     recommendation_db_path: str = str(PROJECT_ROOT / "data" / "recommendations.db")
     auth_db_path: str = str(PROJECT_ROOT / "data" / "auth_users.db")
 

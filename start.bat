@@ -1,13 +1,13 @@
 @echo off
 chcp 65001 >nul
-title MovieRec - Recommendation System Launcher
+title RecipeRecommend - Recommendation System Launcher
 
 set ROOT=%~dp0
 cd /d "%ROOT%"
 
 echo.
 echo ============================================
-echo   MovieRec - MovieLens Recommendation System
+echo   RecipeRecommend - Recipe Recommendation System
 echo ============================================
 echo.
 
@@ -36,36 +36,17 @@ if %errorlevel% neq 0 (
 )
 echo         Dependencies OK
 
-:: ─── 3. Check Data & Build Models ──────────
+:: Step 3. Check recipe model artifacts
 echo.
-echo [3/5] Checking data & models...
+echo [3/5] Checking model artifacts...
 
-set DATA_DIR=%ROOT%data\ml-latest-small
-set PIPELINE_FILE=%ROOT%models\features.pkl
 set INDEX_FILE=%ROOT%models\faiss_hnsw.index
-set EMBED_FILE=%ROOT%models\embeddings.npz
-set RANK_FILE=%ROOT%models\xgb_rank_model.json
-
-if not exist "%DATA_DIR%\ratings.csv" (
-    echo         Downloading MovieLens data...
-    mkdir "%DATA_DIR%" 2>nul
-    copy /y "%ROOT%ratings.csv" "%DATA_DIR%\" >nul 2>&1
-    copy /y "%ROOT%movies.csv"  "%DATA_DIR%\" >nul 2>&1
-    copy /y "%ROOT%tags.csv"    "%DATA_DIR%\" >nul 2>&1
-    copy /y "%ROOT%links.csv"   "%DATA_DIR%\" >nul 2>&1
-)
 
 if not exist "%INDEX_FILE%" (
-    echo         Models not found, running full build...
-    echo         This may take 1-2 minutes...
-    python scripts/build_index.py
-    if %errorlevel% neq 0 (
-        echo [ERROR] Build failed
-        pause
-        exit /b 1
-    )
+    echo         [WARN] FAISS index not found: %INDEX_FILE%
+    echo         Generate recipe artifacts before using vector recall.
 ) else (
-    echo         Models found, skipping build
+    echo         Model artifacts found
 )
 
 :: ─── 4. Start Redis ────────────────────────
