@@ -15,9 +15,11 @@ env/
 # Environment variables (contains sensitive data)
 .env
 
-# Models and data (large binary files)
-models/
-data/
+# Models and deploy-ready recommendation artifacts are committed via Git LFS
+data/*
+!data/final/
+!data/final/recommendations_with_reasons.csv
+!data/final/recommendations_with_reasons_smoke.csv
 qwen_model/
 wheels/
 *.safetensors
