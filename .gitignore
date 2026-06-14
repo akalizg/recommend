@@ -15,11 +15,7 @@ env/
 # Environment variables (contains sensitive data)
 .env
 
-# Models and deploy-ready recommendation artifacts are committed via Git LFS
-data/*
-!data/final/
-!data/final/recommendations_with_reasons.csv
-!data/final/recommendations_with_reasons_smoke.csv
+# Models and data artifacts are committed via Git LFS
 qwen_model/
 wheels/
 *.safetensors
@@ -63,6 +59,9 @@ logs/
 *.db
 *.sqlite
 *.sqlite3
+!data/**/*.db
+!data/**/*.sqlite
+!data/**/*.sqlite3
 
 # Spark local outputs
 spark-warehouse/
