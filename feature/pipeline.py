@@ -27,7 +27,7 @@ class FeaturePipeline:
 
     def __init__(self, data_dir: Optional[str] = None):
         settings = get_settings()
-        self.data_dir = Path(data_dir) if data_dir else Path(settings.movielens_data_dir)
+        self.data_dir = Path(data_dir) if data_dir else Path(settings.canonical_data_dir)
         self.settings = settings
 
         # DataFrames
