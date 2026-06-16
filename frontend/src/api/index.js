@@ -95,3 +95,43 @@ export function healthCheck() {
 }
 
 export default api;
+
+// ---- Taste Twin API ----
+
+export function getTasteTwinSettings(userId) {
+  return api.get(`/taste-twin/settings/${userId}`);
+}
+
+export function updateTasteTwinSettings(userId, payload) {
+  return api.patch(`/taste-twin/settings/${userId}`, payload);
+}
+
+export function getTasteTwinMatches(userId, limit = 10) {
+  return api.get(`/taste-twin/${userId}/matches`, { params: { limit } });
+}
+
+export function getTasteTwinProfile(userId, twinUserId, highPage = 1, lowPage = 1, pageSize = 12) {
+  return api.get(`/taste-twin/${userId}/profiles/${twinUserId}`, { params: { high_page: highPage, low_page: lowPage, page_size: pageSize } });
+}
+
+export function copyTasteTwinRecipe(userId, movieId) {
+  return api.post(`/taste-twin/${userId}/copy/${movieId}`);
+}
+
+export function getTasteTwinJointMenu(userId, twinUserId, offset = 0) {
+  return api.get(`/taste-twin/${userId}/joint-menu/${twinUserId}`, { params: { offset } });
+}
+
+
+
+export function createDemoTasteTwins(userId, count = 5) {
+  return api.post(`/taste-twin/${userId}/demo-twins`, null, { params: { count } });
+}
+
+export function getTasteTwinRecords(userId, recordType = "all", page = 1, pageSize = 12) {
+  return api.get(`/taste-twin/${userId}/records`, { params: { record_type: recordType, page, page_size: pageSize } });
+}
+
+export function deleteTasteTwinRecord(userId, recordId) {
+  return api.delete(`/taste-twin/${userId}/records`, { params: { record_id: recordId } });
+}

@@ -28,8 +28,8 @@
         </div>
       </div>
 
-      <div class="bg-slate-800/50 px-4 py-5 md:px-6">
-        <div class="flex min-h-[620px] flex-col gap-5 rounded-lg border border-slate-700 bg-slate-900/70 p-4 md:p-5">
+      <div class="px-4 py-5 md:px-6">
+        <div class="flex h-[720px] flex-col gap-5 overflow-hidden rounded-lg border border-slate-700 bg-slate-900/70 p-4 md:p-5">
         <div class="order-last mt-auto w-full">
           <div class="w-full space-y-3">
           <div class="flex flex-nowrap gap-2 overflow-x-auto pb-1">
@@ -68,14 +68,15 @@
           </div>
         </div>
 
-          <div v-if="!currentUser" class="order-2 flex justify-center">
+          <div class="min-h-0 flex-1 space-y-5 overflow-y-auto pr-1">
+          <div v-if="!currentUser" class="flex justify-center">
             <div class="flex max-w-3xl flex-col gap-3 rounded-full border border-amber-500/30 bg-amber-950/20 px-4 py-2 text-xs text-amber-100 md:flex-row md:items-center">
               <span>登录后可以使用个性化推荐、喜欢/不喜欢反馈和实时闭环。</span>
               <router-link to="/login" class="font-medium text-gray-100 underline underline-offset-4">登录 / 注册</router-link>
             </div>
           </div>
 
-          <div v-for="message in chatMessages" :key="message.id" class="order-1 flex gap-3" :class="message.role === 'user' ? 'justify-end' : 'justify-start'">
+          <div v-for="message in chatMessages" :key="message.id" class="flex gap-3" :class="message.role === 'user' ? 'justify-end' : 'justify-start'">
             <div v-if="message.role !== 'user'" class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary-600 text-xs font-semibold text-white">
               AI
             </div>
@@ -257,13 +258,13 @@
             </div>
           </div>
 
-          <div v-if="feedbackNotice" class="order-2 flex justify-center">
+          <div v-if="feedbackNotice" class="flex justify-center">
             <div class="rounded-full border border-sky-500/30 bg-sky-950/30 px-4 py-2 text-xs text-sky-100">
               {{ feedbackNotice }}
             </div>
           </div>
 
-          <div v-if="loading" class="order-2 flex justify-start gap-3">
+          <div v-if="loading" class="flex justify-start gap-3">
             <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary-600 text-xs font-semibold text-white">
               AI
             </div>
@@ -275,13 +276,14 @@
             </div>
           </div>
 
-          <div v-else-if="error" class="order-2 flex justify-start gap-3">
+          <div v-else-if="error" class="flex justify-start gap-3">
             <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary-600 text-xs font-semibold text-white">
               AI
             </div>
             <div class="max-w-[92%] rounded-2xl border border-red-500/30 bg-red-950/30 px-4 py-3 text-sm text-red-200 md:max-w-[86%] xl:max-w-[90%]">
               {{ error }}
             </div>
+          </div>
           </div>
         </div>
 
@@ -459,6 +461,14 @@ const ingredientTermMap = {
 };
 
 const currentUser = ref(getCurrentUser());
+const initialChatMessages = [
+  {
+    id: 1,
+    role: "assistant",
+    type: "text",
+    content: "今天想吃什么？可以直接告诉我食材、时间或饮食目标。",
+  },
+];
 const mode = ref(currentUser.value ? "personalized" : "quick");
 const topK = ref(20);
 const ingredientText = ref("");
@@ -481,14 +491,7 @@ const feedbackNotice = ref("");
 const hasStartedChat = ref(false);
 const hasRequestedRecommendations = ref(false);
 const chatInput = ref("");
-const chatMessages = ref([
-  {
-    id: 1,
-    role: "assistant",
-    type: "text",
-    content: "今天想吃什么？可以直接告诉我食材、时间或饮食目标。",
-  },
-]);
+const chatMessages = ref([...initialChatMessages]);
 const activeGuideMessageId = ref(null);
 const latestRecommendationMessageId = ref(null);
 const dismissedIds = ref(new Set());
@@ -501,6 +504,7 @@ let ingredientLookupTimer = null;
 let ingredientLookupVersion = 0;
 let requestVersion = 0;
 let chatMessageId = 2;
+let restoringChatState = false;
 
 const activeMode = computed(() => modes.find((item) => item.id === mode.value) || modes[0]);
 const needsUser = computed(() => ["personalized", "explore"].includes(mode.value));
@@ -1020,13 +1024,14 @@ async function sendFeedback(movie, index, type, value = null) {
   const movieId = Number(movie.movie_id || movie.movieId);
   if (!movieId) return;
 
+  const feedbackType = normalizeFeedbackType(type);
   applyImmediateFeedback(movieId, type, value);
   feedbackLoading.value = { ...feedbackLoading.value, [movieId]: true };
   try {
     await submitFeedback({
       user_id: Number(userId.value),
       movie_id: movieId,
-      feedback_type: type,
+      feedback_type: feedbackType,
       feedback_value: value,
       run_id: activeMode.value.id,
       experiment_name: "recipe_recall_rank_v1",
@@ -1059,6 +1064,11 @@ async function sendFeedback(movie, index, type, value = null) {
   }
 }
 
+function normalizeFeedbackType(type) {
+  if (type === "less_similar") return "not_interested";
+  return type;
+}
+
 function applyImmediateFeedback(movieId, type, value) {
   if (type === "like" || (type === "rating" && Number(value) >= 4)) {
     likedIds.value = new Set([...likedIds.value, movieId]);
@@ -1066,8 +1076,23 @@ function applyImmediateFeedback(movieId, type, value) {
   }
   if (type === "dislike" || type === "less_similar" || (type === "rating" && Number(value) <= 2)) {
     dismissedIds.value = new Set([...dismissedIds.value, movieId]);
+    replaceLatestRecommendationItems();
     showNotice(type === "less_similar" ? "已减少类似菜谱，并从候选池补位。" : "已移除这道菜，并从候选池补位。");
   }
+}
+
+function replaceLatestRecommendationItems() {
+  if (!latestRecommendationMessageId.value) return;
+  const items = displayedRecommendations.value.map((item) => ({
+    ...item,
+    evidenceTags: [...(item.evidenceTags || [])],
+    templateReason: item.templateReason || "",
+  }));
+  chatMessages.value = chatMessages.value.map((message) =>
+    message.id === latestRecommendationMessageId.value && message.type === "recommendations"
+      ? { ...message, items }
+      : message
+  );
 }
 
 function feedbackMessage(type, value) {
@@ -1182,8 +1207,152 @@ watch([exploration, requireImage, userId], () => {
 });
 
 function syncCurrentUser() {
+  const previousUserId = currentUser.value?.user_id || "guest";
   currentUser.value = getCurrentUser();
+  const nextUserId = currentUser.value?.user_id || "guest";
+  if (previousUserId !== nextUserId) restoreConversationState();
 }
+
+function conversationStorageKey() {
+  return `recipe-recommend:chat:${currentUser.value?.user_id || "guest"}`;
+}
+
+function serializeIdSet(value) {
+  return Array.from(value || []).map((item) => Number(item)).filter((item) => Number.isFinite(item));
+}
+
+function persistConversationState() {
+  if (restoringChatState) return;
+  try {
+    const payload = {
+      version: 1,
+      mode: mode.value,
+      topK: topK.value,
+      ingredientText: ingredientText.value,
+      selectedGoals: selectedGoals.value,
+      selectedTags: selectedTags.value,
+      maxMinutes: maxMinutes.value,
+      hasTimeConstraint: hasTimeConstraint.value,
+      exploration: exploration.value,
+      requireImage: requireImage.value,
+      recommendations: recommendations.value,
+      resultInfo: resultInfo.value,
+      feedbackStatus: feedbackStatus.value,
+      hasStartedChat: hasStartedChat.value,
+      hasRequestedRecommendations: hasRequestedRecommendations.value,
+      chatMessages: chatMessages.value.slice(-10),
+      activeGuideMessageId: activeGuideMessageId.value,
+      latestRecommendationMessageId: latestRecommendationMessageId.value,
+      dismissedIds: serializeIdSet(dismissedIds.value),
+      likedIds: serializeIdSet(likedIds.value),
+      batchPage: batchPage.value,
+      chatMessageId,
+    };
+    localStorage.setItem(conversationStorageKey(), JSON.stringify(payload));
+  } catch {
+    // Persistence is a convenience layer; recommendation flow should continue if storage is unavailable.
+  }
+}
+
+function restoreConversationState() {
+  try {
+    const raw = localStorage.getItem(conversationStorageKey());
+    if (!raw) {
+      resetConversationState();
+      return;
+    }
+    const payload = JSON.parse(raw);
+    if (!payload || payload.version !== 1 || !Array.isArray(payload.chatMessages)) return;
+
+    restoringChatState = true;
+    mode.value = payload.mode || (currentUser.value ? "personalized" : "quick");
+    topK.value = Number(payload.topK || 20);
+    ingredientText.value = String(payload.ingredientText || "");
+    selectedGoals.value = Array.isArray(payload.selectedGoals) ? payload.selectedGoals : [];
+    selectedTags.value = Array.isArray(payload.selectedTags) ? payload.selectedTags : [];
+    maxMinutes.value = Number(payload.maxMinutes || 30);
+    hasTimeConstraint.value = Boolean(payload.hasTimeConstraint);
+    exploration.value = Number(payload.exploration ?? 0.55);
+    requireImage.value = payload.requireImage !== false;
+    recommendations.value = Array.isArray(payload.recommendations) ? payload.recommendations : [];
+    resultInfo.value = payload.resultInfo || { tookMs: 0, source: "" };
+    feedbackStatus.value = payload.feedbackStatus || {};
+    feedbackLoading.value = {};
+    hasStartedChat.value = Boolean(payload.hasStartedChat);
+    hasRequestedRecommendations.value = Boolean(payload.hasRequestedRecommendations);
+    chatMessages.value = payload.chatMessages.length ? payload.chatMessages : [...initialChatMessages];
+    activeGuideMessageId.value = payload.activeGuideMessageId || null;
+    latestRecommendationMessageId.value = payload.latestRecommendationMessageId || null;
+    dismissedIds.value = new Set(Array.isArray(payload.dismissedIds) ? payload.dismissedIds.map(Number) : []);
+    likedIds.value = new Set(Array.isArray(payload.likedIds) ? payload.likedIds.map(Number) : []);
+    batchPage.value = Number(payload.batchPage || 0);
+    chatMessageId = Math.max(
+      Number(payload.chatMessageId || 2),
+      ...chatMessages.value.map((message) => Number(message.id || 0) + 1),
+      2
+    );
+  } catch {
+    resetConversationState();
+  } finally {
+    restoringChatState = false;
+  }
+}
+
+function resetConversationState() {
+  restoringChatState = true;
+  mode.value = currentUser.value ? "personalized" : "quick";
+  topK.value = 20;
+  ingredientText.value = "";
+  selectedGoals.value = [];
+  selectedTags.value = [];
+  maxMinutes.value = 30;
+  hasTimeConstraint.value = false;
+  exploration.value = 0.55;
+  requireImage.value = true;
+  recommendations.value = [];
+  resultInfo.value = { tookMs: 0, source: "" };
+  feedbackStatus.value = {};
+  feedbackLoading.value = {};
+  hasStartedChat.value = false;
+  hasRequestedRecommendations.value = false;
+  chatMessages.value = [...initialChatMessages];
+  activeGuideMessageId.value = null;
+  latestRecommendationMessageId.value = null;
+  dismissedIds.value = new Set();
+  likedIds.value = new Set();
+  batchPage.value = 0;
+  chatMessageId = 2;
+  restoringChatState = false;
+}
+
+restoreConversationState();
+
+watch(
+  [
+    mode,
+    topK,
+    ingredientText,
+    selectedGoals,
+    selectedTags,
+    maxMinutes,
+    hasTimeConstraint,
+    exploration,
+    requireImage,
+    recommendations,
+    resultInfo,
+    feedbackStatus,
+    hasStartedChat,
+    hasRequestedRecommendations,
+    chatMessages,
+    activeGuideMessageId,
+    latestRecommendationMessageId,
+    dismissedIds,
+    likedIds,
+    batchPage,
+  ],
+  persistConversationState,
+  { deep: true }
+);
 
 onMounted(() => {
   window.addEventListener("storage", syncCurrentUser);
