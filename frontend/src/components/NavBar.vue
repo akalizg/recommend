@@ -16,6 +16,9 @@
           <router-link to="/search" class="text-gray-300 hover:text-white transition-colors">
             搜索
           </router-link>
+          <router-link to="/taste-twin" class="text-gray-300 hover:text-white transition-colors">
+            饭搭子
+          </router-link>
         </div>
 
         <div class="hidden items-center gap-3 text-sm md:flex">
@@ -61,6 +64,9 @@
         </router-link>
         <router-link to="/search" class="block py-2 text-gray-300 hover:text-white" @click="mobileOpen = false">
           搜索
+        </router-link>
+        <router-link to="/taste-twin" class="block py-2 text-gray-300 hover:text-white" @click="mobileOpen = false">
+          饭搭子
         </router-link>
         <router-link v-if="!currentUser" to="/login" class="block py-2 text-gray-300 hover:text-white" @click="mobileOpen = false">
           登录

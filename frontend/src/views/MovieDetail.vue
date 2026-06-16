@@ -142,7 +142,7 @@
 </template>
 
 <script setup>
-import { computed, defineComponent, h, onMounted, ref } from "vue";
+import { computed, defineComponent, h, onMounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { getMovieDetail, getSimilarRecipes } from "../api";
 import MovieCard from "../components/MovieCard.vue";
@@ -229,9 +229,10 @@ const nutritionItems = computed(() => {
   }));
 });
 
-onMounted(async () => {
+async function loadRecipeDetail(movieId) {
+  loading.value = true;
+  error.value = null;
   try {
-    const movieId = route.params.movieId;
     const { data } = await getMovieDetail(movieId);
     recipe.value = data;
     try {
@@ -245,5 +246,16 @@ onMounted(async () => {
   } finally {
     loading.value = false;
   }
+}
+
+onMounted(() => {
+  loadRecipeDetail(route.params.movieId);
 });
+
+watch(
+  () => route.params.movieId,
+  (movieId, previousMovieId) => {
+    if (movieId && movieId !== previousMovieId) loadRecipeDetail(movieId);
+  }
+);
 </script>

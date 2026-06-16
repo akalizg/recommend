@@ -35,6 +35,8 @@ from rank.rank_model import RankingService
 from cache.redis_cache import get_cache
 from feedback.feedback_service import FeedbackService
 from experiment.ab_service import ABService
+from taste_twin import router as taste_twin_router
+from taste_twin.service import TasteTwinService
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +144,11 @@ def initialize_services():
     state.feedback_service = FeedbackService(cache=state.cache)
     state.ab_service = ABService(cache=state.cache)
 
+    # ---- Taste Twin: isolated user-vector matching service ----
+    logger.info("Initializing Taste Twin service...")
+    state.taste_twin_service = TasteTwinService.create_default()
+    state.taste_twin_service.initialize()
+
     logger.info("=== All services initialized ===")
 
 
@@ -188,6 +195,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(router)
+    app.include_router(taste_twin_router)
 
     return app
 

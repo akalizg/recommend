@@ -40,8 +40,8 @@ class SimpleAuthService:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.execute(
                     """
-                    INSERT INTO auth_users (username, password_hash, display_name, recipe_user_id, created_at)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO auth_users (username, password_hash, display_name, recipe_user_id, created_at, is_discoverable, preference_tags)
+                    VALUES (?, ?, ?, ?, ?, 1, '')
                     """,
                     (username, password_hash, display_name, recipe_user_id, created_at),
                 )
@@ -97,10 +97,20 @@ class SimpleAuthService:
                     password_hash TEXT NOT NULL,
                     display_name TEXT NOT NULL,
                     recipe_user_id INTEGER NOT NULL,
-                    created_at TEXT NOT NULL
+                    created_at TEXT NOT NULL,
+                    is_discoverable INTEGER NOT NULL DEFAULT 1,
+                    community_alias TEXT,
+                    preference_tags TEXT
                 )
                 """
             )
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(auth_users)").fetchall()}
+            if "is_discoverable" not in columns:
+                conn.execute("ALTER TABLE auth_users ADD COLUMN is_discoverable INTEGER NOT NULL DEFAULT 1")
+            if "community_alias" not in columns:
+                conn.execute("ALTER TABLE auth_users ADD COLUMN community_alias TEXT")
+            if "preference_tags" not in columns:
+                conn.execute("ALTER TABLE auth_users ADD COLUMN preference_tags TEXT")
             conn.commit()
 
 

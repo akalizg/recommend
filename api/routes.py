@@ -997,6 +997,7 @@ class AppState:
         self.user_profile_builder = None
         self.feedback_service = None
         self.ab_service = None
+        self.taste_twin_service = None
 
 
 _app_state = AppState()
