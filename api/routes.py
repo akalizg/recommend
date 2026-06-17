@@ -1014,17 +1014,11 @@ async def health(state: AppState = Depends(get_state)):
     from app.config import get_settings
     settings = get_settings()
 
-    redis_ok = False
-    faiss_size = 0
-    if state.cache:
-        redis_ok = state.cache.health_check()
-    if state.faiss_index:
-        faiss_size = state.faiss_index.ntotal
-
+    faiss_size = state.faiss_index.ntotal if state.faiss_index else 0
     return HealthResponse(
         status="ok",
         version=settings.app_version,
-        redis=redis_ok,
+        redis=bool(state.cache),
         faiss_index_size=faiss_size,
     )
 
@@ -1362,18 +1356,83 @@ async def similar_recipes(
     )
 
 
+@router.post("/users/{user_id}/onboarding-preferences")
+async def save_onboarding_preferences(user_id: int, payload: dict):
+    """Persist onboarding preference seed for a new user."""
+    from pathlib import Path
+
+    seed_path = PROJECT_ROOT / "data" / "features" / "onboarding_seed.json"
+    seed_path.parent.mkdir(parents=True, exist_ok=True)
+    existing = {}
+    if seed_path.exists():
+        try:
+            existing = json.loads(seed_path.read_text(encoding="utf-8"))
+        except Exception:
+            existing = {}
+    existing[str(user_id)] = {**payload, "user_id": user_id}
+    seed_path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"status": "ok", "user_id": user_id, "seed_path": str(seed_path)}
+
+
 @router.post("/recipes/cold-start", response_model=ColdStartResponse)
 async def cold_start_recipes(payload: ColdStartRequest):
     """Recommend recipes from explicit new-user preferences."""
     from recommendation.cold_start import cold_start_recommend
+    from recall.kg_recall import KGRecall
 
-    params = payload.model_dump()
-    params["ingredients"] = _map_ingredient_terms(list(payload.ingredients))
+    params = {
+        "preferred_tags": list(payload.preferred_tags),
+        "ingredients": _map_ingredient_terms(list(payload.preferred_ingredients or payload.ingredients)),
+        "dietary_goals": list(payload.dietary_goals),
+        "max_minutes": payload.max_minutes,
+        "min_rating": payload.min_rating,
+        "require_image": payload.require_image,
+        "limit": payload.limit,
+    }
+
+    kg_recalls = []
+    try:
+        kg = KGRecall()
+        try:
+            kg_recalls = kg.hybrid_recall(
+                ingredients=params["ingredients"],
+                tags=params["preferred_tags"],
+                max_calories=500 if any("低" in g or "健康" in g for g in params["dietary_goals"]) else None,
+                min_protein=15 if any("蛋白" in g or "增肌" in g for g in params["dietary_goals"]) else None,
+                top_n=max(payload.limit, 20),
+            )
+        finally:
+            kg.close()
+    except Exception:
+        kg_recalls = []
+
     result = cold_start_recommend(
         **params,
         profile_path=OFFLINE_MOVIE_PROFILE_PATH,
         metadata_path=OFFLINE_RECIPE_METADATA_PATH,
     )
+    if kg_recalls:
+        kg_ids = [rid for rid, _ in kg_recalls[: payload.limit]]
+        kg_rank = {rid: idx for idx, rid in enumerate(kg_ids)}
+        ordered = []
+        seen = set()
+        for item in result.get("recommendations", []):
+            rid = int(item.get("movie_id") or item.get("recipe_id") or 0)
+            if rid in kg_rank and rid not in seen:
+                ordered.append(item)
+                seen.add(rid)
+        for rid, _ in kg_recalls:
+            if rid in seen:
+                continue
+            item = next((x for x in result.get("recommendations", []) if int(x.get("movie_id") or x.get("recipe_id") or 0) == rid), None)
+            if item:
+                ordered.append(item)
+                seen.add(rid)
+            if len(ordered) >= payload.limit:
+                break
+        if ordered:
+            result["recommendations"] = ordered[: payload.limit]
+            result["source"] = "kg_prioritized_cold_start"
     return ColdStartResponse(**result)
 
 

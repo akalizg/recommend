@@ -11,6 +11,7 @@ import logging
 import os
 import sys
 import time
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.logging_config import setup_logging
 from api.routes import router, _app_state
+from api.chat_routes import router as chat_router
 from feature.pipeline import FeaturePipeline
 from feature.user_profile import UserProfileBuilder
 from embedding.embedding_service import EmbeddingService
@@ -144,26 +146,31 @@ def initialize_services():
     state.feedback_service = FeedbackService(cache=state.cache)
     state.ab_service = ABService(cache=state.cache)
 
-    # ---- Taste Twin: isolated user-vector matching service ----
-    logger.info("Initializing Taste Twin service...")
-    state.taste_twin_service = TasteTwinService.create_default()
-    state.taste_twin_service.initialize()
+    # Taste Twin is initialized lazily by its API to avoid blocking core auth/health routes.
+    state.taste_twin_service = None
 
-    logger.info("=== All services initialized ===")
+    logger.info("=== Core services initialized ===")
+
+
+def _initialize_services_background() -> None:
+    try:
+        t0 = time.perf_counter()
+        initialize_services()
+        elapsed = time.perf_counter() - t0
+        logger.info(f"Background service initialization complete in {elapsed:.1f}s")
+    except Exception:
+        logger.exception("Background service initialization failed")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI lifespan: startup and shutdown events."""
-    # Startup
     setup_logging()
     logger.info(f"Starting {get_settings().app_name} v{get_settings().app_version}")
-    t0 = time.perf_counter()
-    initialize_services()
-    elapsed = time.perf_counter() - t0
-    logger.info(f"Startup complete in {elapsed:.1f}s")
+    thread = threading.Thread(target=_initialize_services_background, name="service-init", daemon=True)
+    thread.start()
+    logger.info("FastAPI startup completed; recommendation services are initializing in background")
     yield
-    # Shutdown
     logger.info("Shutting down...")
     if _app_state.cache:
         try:
@@ -195,6 +202,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(router)
+    app.include_router(chat_router)
     app.include_router(taste_twin_router)
 
     return app

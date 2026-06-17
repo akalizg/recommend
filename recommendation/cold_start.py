@@ -47,6 +47,8 @@ METADATA_COLS = [
 ]
 
 _TABLE_CACHE: dict[str, Any] = {}
+_SCHEMA_CACHE: dict[str, list[str]] = {}
+_MERGED_CACHE: dict[tuple[str, str], pd.DataFrame] = {}
 
 
 def cold_start_recommend(
@@ -63,9 +65,11 @@ def cold_start_recommend(
     if limit <= 0:
         raise ValueError("推荐数量必须大于 0")
 
-    profile = _load_profile(Path(profile_path))
-    metadata = _load_metadata(Path(metadata_path))
-    df = profile.merge(metadata, left_on="movieId", right_on="recipe_id", how="left")
+    profile_path = Path(profile_path)
+    metadata_path = Path(metadata_path)
+    profile = _load_profile(profile_path)
+    metadata = _load_metadata(metadata_path)
+    df = _load_merged(profile_path, metadata_path, profile, metadata)
 
     terms = _normalize_terms([*(preferred_tags or []), *(ingredients or []), *(dietary_goals or [])])
     tag_terms = _normalize_terms(preferred_tags or [])
@@ -163,7 +167,8 @@ def _load_metadata(path: Path) -> pd.DataFrame:
         return cached
     if not path.exists():
         return pd.DataFrame({"recipe_id": pd.Series(dtype=int)})
-    usecols = [col for col in METADATA_COLS if col in pd.read_csv(path, nrows=0).columns]
+    schema = _get_csv_schema(path)
+    usecols = [col for col in METADATA_COLS if col in schema]
     df = pd.read_csv(path, usecols=usecols)
     if "recipe_id" not in df.columns:
         return pd.DataFrame({"recipe_id": pd.Series(dtype=int)})
@@ -171,6 +176,30 @@ def _load_metadata(path: Path) -> pd.DataFrame:
     df = df.dropna(subset=["recipe_id"]).drop_duplicates("recipe_id").copy()
     df["recipe_id"] = df["recipe_id"].astype(int)
     _TABLE_CACHE[key] = df
+    return df
+
+
+def _get_csv_schema(path: Path) -> list[str]:
+    key = f"schema:{path}:{path.stat().st_mtime_ns if path.exists() else 0}"
+    cached = _SCHEMA_CACHE.get(key)
+    if cached is not None:
+        return cached
+    if not path.exists():
+        return []
+    cols = list(pd.read_csv(path, nrows=0).columns)
+    _SCHEMA_CACHE.clear()
+    _SCHEMA_CACHE[key] = cols
+    return cols
+
+
+def _load_merged(profile_path: Path, metadata_path: Path, profile: pd.DataFrame, metadata: pd.DataFrame) -> pd.DataFrame:
+    key = (str(profile_path), str(metadata_path))
+    cached = _MERGED_CACHE.get(key)
+    if cached is not None:
+        return cached
+    df = profile.merge(metadata, left_on="movieId", right_on="recipe_id", how="left")
+    _MERGED_CACHE.clear()
+    _MERGED_CACHE[key] = df
     return df
 
 

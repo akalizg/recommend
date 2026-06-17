@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div>
     <div class="flex items-center justify-between mb-4">
       <h2 class="text-lg font-bold text-gray-100">热门菜谱</h2>
@@ -25,7 +25,7 @@
 
 <script setup>
 import { ref, onMounted } from "vue";
-import { getOfflinePopularRecipes } from "../api";
+import { getOfflinePopularRecipes, getPopular } from "../api";
 import MovieCard from "./MovieCard.vue";
 
 const movies = ref([]);
@@ -38,10 +38,20 @@ const props = defineProps({
 });
 
 onMounted(async () => {
+  const started = performance.now();
   try {
-    const started = performance.now();
-    const { data } = await getOfflinePopularRecipes(props.limit);
+    let data;
+    try {
+      const res = await getPopular(props.limit);
+      data = res.data;
+    } catch {
+      const res = await getOfflinePopularRecipes(props.limit);
+      data = res.data;
+    }
     movies.value = data.popular || [];
+    if (!movies.value.length) {
+      error.value = "暂无热门菜谱";
+    }
     tookMs.value = Math.round(performance.now() - started);
   } catch (e) {
     error.value = "热门菜谱加载失败";

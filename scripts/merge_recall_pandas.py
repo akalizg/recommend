@@ -21,6 +21,7 @@ DEFAULT_EMBEDDING = PROJECT_ROOT / "data" / "recall" / "faiss_hnsw_recall.csv"
 DEFAULT_LIGHTGCN = PROJECT_ROOT / "data" / "recall" / "lightgcn_recall.csv"
 DEFAULT_CONTENT = PROJECT_ROOT / "data" / "recall" / "content_recall.csv"
 DEFAULT_HOT = PROJECT_ROOT / "data" / "recall" / "hot_recall.csv"
+DEFAULT_KG = PROJECT_ROOT / "data" / "recall" / "kg_recall.csv"
 DEFAULT_OUTPUT = PROJECT_ROOT / "data" / "recall" / "merged_recall_candidates.csv"
 
 OUTPUT_COLUMNS = [
@@ -32,23 +33,26 @@ OUTPUT_COLUMNS = [
     "lightgcn_score",
     "content_score",
     "hot_score",
+    "kg_score",
     "is_als_recall",
     "is_itemcf_recall",
     "is_embedding_recall",
     "is_lightgcn_recall",
     "is_content_recall",
     "is_hot_recall",
+    "is_kg_recall",
     "recall_source_count",
     "merged_recall_score",
 ]
 
 CHANNELS = [
-    ("als", "als_score", "is_als_recall", 0.30),
-    ("itemcf", "itemcf_score", "is_itemcf_recall", 0.22),
-    ("embedding", "embedding_score", "is_embedding_recall", 0.16),
-    ("lightgcn", "lightgcn_score", "is_lightgcn_recall", 0.12),
-    ("content", "content_score", "is_content_recall", 0.12),
+    ("als", "als_score", "is_als_recall", 0.28),
+    ("itemcf", "itemcf_score", "is_itemcf_recall", 0.20),
+    ("embedding", "embedding_score", "is_embedding_recall", 0.15),
+    ("lightgcn", "lightgcn_score", "is_lightgcn_recall", 0.11),
+    ("content", "content_score", "is_content_recall", 0.10),
     ("hot", "hot_score", "is_hot_recall", 0.08),
+    ("kg", "kg_score", "is_kg_recall", 0.08),
 ]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
@@ -63,6 +67,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lightgcn", default=str(DEFAULT_LIGHTGCN))
     parser.add_argument("--content", default=str(DEFAULT_CONTENT))
     parser.add_argument("--hot", default=str(DEFAULT_HOT))
+    parser.add_argument("--kg", default=str(DEFAULT_KG))
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT))
     parser.add_argument("--top-n", type=int, default=100)
     return parser.parse_args()
@@ -72,6 +77,8 @@ def _read_channel(path: Path, recall_type: str, score_col: str, flag_col: str) -
     if not path.exists():
         raise FileNotFoundError(f"{recall_type} recall input not found: {path}")
     usecols = ["userId", "movieId", "recall_type", "recall_score"]
+    if recall_type == "kg":
+        usecols = ["userId", "movieId", "recall_type", "recall_score"]
     df = pd.read_csv(path, usecols=usecols)
     df["userId"] = pd.to_numeric(df["userId"], errors="coerce")
     df["movieId"] = pd.to_numeric(df["movieId"], errors="coerce")
@@ -107,6 +114,7 @@ def merge_recall_pandas(
     lightgcn_path: str | Path = DEFAULT_LIGHTGCN,
     content_path: str | Path = DEFAULT_CONTENT,
     hot_path: str | Path = DEFAULT_HOT,
+    kg_path: str | Path = DEFAULT_KG,
     output_path: str | Path = DEFAULT_OUTPUT,
     top_n: int = 100,
 ) -> dict:
@@ -119,6 +127,7 @@ def merge_recall_pandas(
         "lightgcn": Path(lightgcn_path).resolve(),
         "content": Path(content_path).resolve(),
         "hot": Path(hot_path).resolve(),
+        "kg": Path(kg_path).resolve(),
     }
     output_file = Path(output_path).resolve()
 
@@ -185,6 +194,7 @@ def main() -> None:
         args.lightgcn,
         args.content,
         args.hot,
+        args.kg,
         args.output,
         args.top_n,
     )

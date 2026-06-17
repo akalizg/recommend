@@ -55,6 +55,8 @@
       </div>
     </section>
 
+    <PreferenceModule />
+
     <PopularMovies :limit="20" />
 
     <section class="space-y-5">
@@ -74,6 +76,7 @@
 
 <script setup>
 import PopularMovies from "../components/PopularMovies.vue";
+import PreferenceModule from "../components/PreferenceModule.vue";
 
 const stackItems = [
   { name: "Spark 离线批处理", desc: "生成用户画像、食谱画像、召回候选和排序特征。" },

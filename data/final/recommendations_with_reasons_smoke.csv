@@ -1,2 +1,3 @@
-﻿userId,movieId,rank_position,rank_score,mmr_score,movie_title,movie_genres,favorite_genres,template_reason,llm_reason,final_reason,reason_source,reason_evidence
-1,7122,1,0.99890721,0.6992350469999999,King of Hearts (1966),Comedy|Drama|War,Action|Adventure|Comedy|Drama|Thriller,这部电影包含你常看的Comedy元素，和你的偏好比较匹配，整体评分也很高。,这部电影结合了你喜爱的喜剧元素，并且得到了很高的评价。,这部电影结合了你喜爱的喜剧元素，并且得到了很高的评价。,qwen,"{""movie_avg_rating"": 5.0, ""genre_match_score"": 0.6666666666666666, ""rank_position"": 1}"
+version https://git-lfs.github.com/spec/v1
+oid sha256:85c461b8bfe280181695110da9a2b0ba360132c041f79f6d873135e18690a396
+size 645

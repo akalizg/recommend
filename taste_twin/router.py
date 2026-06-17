@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from api.routes import get_state
@@ -22,7 +24,10 @@ router = APIRouter(prefix="/taste-twin", tags=["Taste Twin"])
 def get_taste_twin_service(state=Depends(get_state)) -> TasteTwinService:
     service = getattr(state, "taste_twin_service", None)
     if service is None:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Taste Twin service is not initialized")
+        from taste_twin.service import TasteTwinService
+        service = TasteTwinService.create_default()
+        setattr(state, "taste_twin_service", service)
+        asyncio.create_task(asyncio.to_thread(service.initialize))
     return service
 
 

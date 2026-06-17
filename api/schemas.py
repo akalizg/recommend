@@ -97,12 +97,17 @@ class SimilarRecipesResponse(BaseModel):
 
 class ColdStartRequest(BaseModel):
     preferred_tags: List[str] = Field(default_factory=list)
+    preferred_ingredients: List[str] = Field(default_factory=list)
+    disliked_ingredients: List[str] = Field(default_factory=list)
     ingredients: List[str] = Field(default_factory=list)
     dietary_goals: List[str] = Field(default_factory=list)
     max_minutes: Optional[int] = Field(default=None, ge=1)
     min_rating: Optional[float] = Field(default=None, ge=0, le=5)
     require_image: bool = False
     limit: int = Field(default=20, ge=1, le=100)
+    user_id: Optional[int] = Field(default=None, ge=1)
+    source: str = Field(default="onboarding")
+    scenario: Optional[str] = None
 
 
 class ColdStartResponse(BaseModel):
