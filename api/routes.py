@@ -11,7 +11,8 @@ from typing import Optional
 import faiss
 import numpy as np
 import pandas as pd
-from fastapi import APIRouter, HTTPException, Query, Depends, Response
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Depends, Response
+from starlette.concurrency import run_in_threadpool
 
 from api.schemas import (
     RecommendationResponse,
@@ -983,6 +984,39 @@ def _record_exposures(state, user_id: int, items: list[MovieItem], request_id: s
             logger.exception("Failed to record exposure for user=%s recipe=%s", user_id, item.movie_id)
 
 
+def _offline_recommendation_items(user_id: int, top_k: int) -> list[MovieItem]:
+    """Build recommendations from offline artifacts inside a worker thread."""
+    try:
+        df, path = _read_cached_csv(OFFLINE_RECOMMENDATIONS_PATH)
+        _require_columns(df, {"userId", "movieId"}, path.name)
+        user_ids = pd.to_numeric(df["userId"], errors="coerce")
+        user_recs = df[user_ids == user_id].copy()
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+        user_recs = pd.DataFrame()
+
+    if not user_recs.empty:
+        if "rank_position" in user_recs.columns:
+            user_recs["_rank_position"] = pd.to_numeric(user_recs["rank_position"], errors="coerce").fillna(10**9)
+            user_recs = user_recs.sort_values(["_rank_position", "movieId"], ascending=[True, True])
+        return [
+            build_movie_item(
+                int(record["movieId"]),
+                f"Recipe {int(record['movieId'])}",
+                _row_float(record, "rank_score", "mmr_score", "recall_score", default=0.0),
+                record,
+            )
+            for record in _json_safe_records(user_recs.head(top_k))
+        ]
+
+    popular_records, _ = _popular_recipe_records(top_k)
+    return [
+        build_movie_item(record["movie_id"], record["title"], float(record.get("score") or 0.0), record)
+        for record in popular_records
+    ]
+
+
 # ---------- Application state dependency ----------
 
 class AppState:
@@ -1061,6 +1095,7 @@ async def auth_login(payload: AuthLoginRequest):
 @router.get("/recommend/{user_id}", response_model=RecommendationResponse)
 async def recommend(
     user_id: int,
+    background_tasks: BackgroundTasks,
     top_k: int = Query(default=20, ge=1, le=100, description="推荐数量"),
     use_cache: bool = Query(default=True, description="是否使用 Redis 缓存"),
     state: AppState = Depends(get_state),
@@ -1076,7 +1111,7 @@ async def recommend(
         from feedback.realtime_recommender import RealtimeRecipeRecommender
 
         realtime_cache_key = RealtimeRecipeRecommender.cache_key(user_id, top_k)
-        realtime_result = state.cache.get_json(realtime_cache_key)
+        realtime_result = await run_in_threadpool(state.cache.get_json, realtime_cache_key)
         if realtime_result is not None:
             elapsed = (time.perf_counter() - t0) * 1000
             realtime_result["cached"] = True
@@ -1085,38 +1120,14 @@ async def recommend(
 
     cache_key = f"recipe:offline_rec:user:{user_id}:k:{top_k}"
     if use_cache and state.cache:
-        cached_result = state.cache.get_json(cache_key)
+        cached_result = await run_in_threadpool(state.cache.get_json, cache_key)
         if cached_result is not None:
             elapsed = (time.perf_counter() - t0) * 1000
             cached_result["cached"] = True
             cached_result["took_ms"] = round(elapsed, 2)
             return RecommendationResponse(**cached_result)
 
-    try:
-        df, path = _read_offline_csv(OFFLINE_RECOMMENDATIONS_PATH)
-        _require_columns(df, {"userId", "movieId"}, path.name)
-        df["userId"] = pd.to_numeric(df["userId"], errors="coerce")
-        user_recs = df[df["userId"] == user_id].copy()
-    except HTTPException as exc:
-        if exc.status_code != 404:
-            raise
-        user_recs = pd.DataFrame()
-
-    items: list[MovieItem] = []
-    if not user_recs.empty:
-        if "rank_position" in user_recs.columns:
-            user_recs["_rank_position"] = pd.to_numeric(user_recs["rank_position"], errors="coerce").fillna(10**9)
-            user_recs = user_recs.sort_values(["_rank_position", "movieId"], ascending=[True, True])
-        for record in _json_safe_records(user_recs.head(top_k)):
-            recipe_id = int(record["movieId"])
-            score = _row_float(record, "rank_score", "mmr_score", "recall_score", default=0.0)
-            items.append(build_movie_item(recipe_id, f"菜谱 {recipe_id}", score, record))
-    else:
-        popular_records, _ = _popular_recipe_records(top_k)
-        items = [
-            build_movie_item(record["movie_id"], record["title"], float(record.get("score") or 0.0), record)
-            for record in popular_records
-        ]
+    items = await run_in_threadpool(_offline_recommendation_items, user_id, top_k)
 
     elapsed = (time.perf_counter() - t0) * 1000
     result = RecommendationResponse(
@@ -1127,7 +1138,12 @@ async def recommend(
     )
 
     if use_cache and state.cache:
-        state.cache.set_json(cache_key, result.model_dump(), ttl=state.cache.settings.redis_ttl_recommend)
+        background_tasks.add_task(
+            state.cache.set_json,
+            cache_key,
+            result.model_dump(),
+            state.cache.settings.redis_ttl_recommend,
+        )
 
     if state.ab_service is None:
         from experiment.ab_service import ABService
@@ -1137,8 +1153,16 @@ async def recommend(
         from feedback.feedback_service import FeedbackService
 
         state.feedback_service = FeedbackService(cache=state.cache)
-    group = state.ab_service.assign_group(user_id, "recipe_recall_rank_v1")["group_name"]
-    _record_exposures(state, user_id, items, request_id=f"offline-{user_id}-{int(time.time() * 1000)}", group_name=group)
+    group_info = await run_in_threadpool(state.ab_service.assign_group, user_id, "recipe_recall_rank_v1")
+    group = group_info["group_name"]
+    background_tasks.add_task(
+        _record_exposures,
+        state,
+        user_id,
+        items,
+        f"offline-{user_id}-{int(time.time() * 1000)}",
+        group,
+    )
 
     return result
 
