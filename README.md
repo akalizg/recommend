@@ -2,7 +2,7 @@
 
 RecipeRec 是一个基于 Food.com 数据集构建的个性化食谱推荐系统，面向“用户不知道做什么菜、想发现更符合口味和场景的食谱”这一典型需求，提供从离线训练、在线推荐、搜索详情、实时反馈到效果评估的完整推荐系统链路。
 
-当前系统已经接入 Food.com 官方训练集、验证集和测试集划分，完成了离线推荐链路、增强排序模型对比、冷启动推荐、实时反馈闭环、前后端接口、Elasticsearch 搜索、推荐理由、图片增强、MinIO 产物同步、A/B 实验基础能力和监控指标基础能力。
+当前系统已经接入 Food.com 官方训练集、验证集和测试集划分，完成了离线推荐链路、增强排序模型对比、冷启动推荐、实时反馈闭环、MapReduce 风格多模型并发推理、前后端接口、Elasticsearch 搜索、推荐理由、图片增强、MinIO 产物同步、A/B 实验基础能力和监控指标基础能力。
 
 ## 目录
 
@@ -381,6 +381,7 @@ Prefix: offline/latest
 在线服务主要由 FastAPI 提供：
 
 - 个性化推荐接口读取离线生成的 `LightGBM + MMR` 推荐结果。
+- 个性化推荐接口在缓存未命中时可触发 MapReduce 风格多模型并发推理，将 ALS、ItemCF、Content、Hot、Ranker 等模型或策略并发执行后再统一融合。
 - 统一场景推荐接口 `/recipes/scenario-recommend` 支持个性化、食材、健康、快手菜和探索推荐。
 - 详情接口优先读取 Elasticsearch。
 - 搜索接口优先读取 Elasticsearch。
@@ -402,7 +403,79 @@ Prefix: offline/latest
 
 统一场景推荐接口的优势是：前端只需要调用一个入口，后端根据场景自动选择离线推荐、内容冷启动或探索重排链路，既保留推荐算法资产，也让系统表现更像真实食谱推荐产品。
 
-### 4. 实时反馈与实时推荐路线
+### 4. MapReduce 多模型并发推理路线
+
+MapReduce 多模型并发推理用于提升在线推荐接口在缓存未命中时的响应能力。这里的 MapReduce 不是离线 Spark 批处理，而是一次在线推荐请求内部的并发调度与结果融合：
+
+```text
+用户请求 /recipes/recommend/{user_id}
+        |
+        v
+Map：并发分发给多个推荐模型或策略
+        |
+        +--> ALS 协同过滤召回
+        +--> ItemCF / 离线个性化结果适配
+        +--> Content 内容画像匹配
+        +--> Hot 热门兜底
+        +--> Ranker 召回后排序
+        |
+        v
+Reduce：统一归一化、去重、加权融合
+        |
+        v
+最终 TopN 食谱推荐
+```
+
+当前实现位于：
+
+- `recommendation/inference_schemas.py`：统一推理输入、模型输出和 Reduce 输出结构。
+- `recommendation/model_adapters.py`：ALS、ItemCF、Content、Hot、Ranker 模型适配器。
+- `recommendation/parallel_inference.py`：基于 `ThreadPoolExecutor` 的并发调度器。
+- `recommendation/result_reducer.py`：分数归一化、按 `recipe_id` 去重、模型权重融合和多来源 bonus。
+- `api/routes.py`：在 `/recipes/recommend/{user_id}` 和 `/recommend/{user_id}` 中接入并发推理链路。
+
+推荐接口的实际优先级为：
+
+```text
+Redis 实时推荐缓存
+  -> Redis 离线推荐缓存
+  -> MapReduce 多模型并发推理
+  -> 离线 CSV 推荐补齐
+  -> 热门食谱兜底
+```
+
+并发推理具备以下降级能力：
+
+- 单个模型超时不会拖慢整个推荐接口。
+- 单个模型异常不会影响其他模型结果返回。
+- 部分模型成功时，Reduce 只融合成功模型的候选。
+- 并发结果不足时，会继续使用离线推荐和热门食谱补齐。
+
+相关配置在 `app/config.py` 中：
+
+```text
+parallel_inference_enabled=True
+parallel_inference_max_workers=5
+parallel_inference_model_timeout_ms=800
+parallel_inference_overall_timeout_ms=1500
+parallel_inference_source_bonus=0.05
+```
+
+并发推理会写入 Prometheus 指标，便于确认线上是否真的触发：
+
+```text
+model_inference_requests_total
+model_inference_duration_seconds_total
+model_inference_duration_seconds_count
+model_inference_result_count
+recommend_reduce_duration_seconds_total
+recommend_reduce_duration_seconds_count
+recommend_reduce_input_count
+recommend_reduce_output_count
+recommend_source_total
+```
+
+### 5. 实时反馈与实时推荐路线
 
 实时链路用于弥补离线推荐“周期性更新”的不足。当用户刚刚点击、喜欢、不喜欢或评分某个食谱时，系统不需要重新训练 ALS、LightGCN 或 XGBoost，而是使用轻量级实时更新方式快速调整推荐结果。
 
@@ -452,7 +525,7 @@ Prefix: offline/latest
 - 加入滑动窗口统计，例如最近 10 分钟点击率、喜欢率和不喜欢率。
 - 将实时反馈特征周期性回流到离线训练集，用于下一轮模型训练。
 
-### 5. Spark 集群与本地执行路线
+### 6. Spark 集群与本地执行路线
 
 当前项目已经完成三节点 Spark standalone 集群接入，并通过项目离线画像构建任务验证。Spark 已经作为项目的大数据计算扩展能力接入。
 
@@ -504,7 +577,7 @@ quality validation result: success
 
 当前项目的定位是“本机负责开发、接口和快速离线执行，虚拟机 Spark 集群负责展示分布式离线计算能力”。Spark 或本地离线任务生成的 `data/`、`models/` 产物可以通过 MinIO 同步回本地服务，避免每次手动下载文件。后续如果继续升级，可以接入 HDFS 或共享存储，把全量画像构建、ALS、ItemCF、召回合并和排序特征导出固定为 Spark 集群任务稳定运行。
 
-### 6. MinIO 离线产物同步路线
+### 7. MinIO 离线产物同步路线
 
 MinIO 用来解决“Spark 在虚拟机训练完，本地后端怎么拿到最新模型和推荐结果”的问题。它不是推荐算法本身，而是离线计算产物的统一中转站。
 
@@ -630,7 +703,58 @@ merged_score += 0.1 * recall_source_count
 
 如果一个食谱同时被多个通道召回，说明它在多个角度上都可能适合用户，因此会获得额外加分。
 
-### 8. 排序模型选择与 LightGBM 精排
+### 8. 在线 MapReduce 多模型并发推理
+
+离线“多路召回融合”解决的是批量生成候选和排序产物的问题；在线 MapReduce 多模型并发推理解决的是一次推荐接口请求中的响应速度和模型融合问题。
+
+在 `/recipes/recommend/{user_id}` 或兼容接口 `/recommend/{user_id}` 中，如果实时缓存和离线缓存没有命中，系统会启动 `ParallelInferenceService`：
+
+```text
+ParallelInferenceService
+        |
+        +--> ALSModelAdapter
+        +--> ItemCFModelAdapter
+        +--> ContentModelAdapter
+        +--> HotModelAdapter
+        +--> RankerModelAdapter
+        |
+        v
+ResultReducer
+```
+
+每个模型适配器都输出统一格式：
+
+```json
+{
+  "recipe_id": 123,
+  "score": 0.87,
+  "source": "als",
+  "reason": "ALS collaborative recall"
+}
+```
+
+Reduce 阶段会执行：
+
+1. 过滤异常模型和超时模型。
+2. 对每个模型内部的分数做归一化。
+3. 按模型权重计算加权分数。
+4. 按 `recipe_id` 去重。
+5. 对来自多个模型的同一食谱增加来源数量奖励。
+6. 输出最终 TopN 推荐。
+
+默认融合权重为：
+
+| 在线模型/策略 | 权重 |
+| --- | ---: |
+| ALS | 0.30 |
+| ItemCF | 0.25 |
+| Content | 0.20 |
+| Ranker | 0.15 |
+| Hot | 0.10 |
+
+并发推理的目标不是替代离线训练链路，而是在保持原有离线推荐兜底能力的同时，让缓存未命中的在线请求可以同时利用多个模型结果。实际效果可以通过 `/metrics` 中的模型推理和 Reduce 指标确认。
+
+### 9. 排序模型选择与 LightGBM 精排
 
 排序阶段先以 XGBoost 作为基础排序基线，再在同一批排序训练数据上加入增强特征，对比 XGBoost、LightGBM 和 Logistic Regression。当前系统根据验证集效果选择 LightGBM 作为主排序模型。
 
@@ -663,7 +787,7 @@ merged_score += 0.1 * recall_source_count
 - Train AUC：0.949110
 - Validation AUC：0.947570
 
-### 9. 增强排序模型对比与落地
+### 10. 增强排序模型对比与落地
 
 项目新增增强排序模型选择脚本：
 
@@ -728,7 +852,7 @@ Logistic Regression
 多路召回 -> LightGBM Top50 -> MMR Top10 -> 推荐理由与详情增强
 ```
 
-### 10. MMR 多样性重排
+### 11. MMR 多样性重排
 
 LightGBM 排序后得到 Top50，MMR 从中选出 Top10。MMR 会同时考虑：
 
@@ -737,7 +861,7 @@ LightGBM 排序后得到 Top50，MMR 从中选出 Top10。MMR 会同时考虑：
 
 当前 MMR 的 `lambda_rel = 0.7`，即更偏向相关性，同时保留一定多样性。
 
-### 11. 冷启动推荐
+### 12. 冷启动推荐
 
 冷启动推荐用于解决新用户没有历史评分或历史行为不足的问题。项目新增了基于显式偏好的冷启动推荐能力：
 
@@ -1225,6 +1349,9 @@ tests/test_foodcom_conversion.py
 - 已完成多场景推荐封装，将个性化推荐、食材推荐、健康推荐、快手菜推荐和探索推荐统一到同一个推荐接口。
 - 已完成探索推荐重排，在 LightGBM Top50 候选上结合用户偏好差异、新颖度、图片可用性、热门度、评分和多样性惩罚生成探索型结果。
 - 已完成个性化 TopK 补齐逻辑，当最终 MMR Top10 不足以满足 Top20/Top50 请求时，自动从 LightGBM Top50 候选补齐。
+- 已完成 MapReduce 风格多模型并发推理，支持 ALS、ItemCF、Content、Hot、Ranker 等模型或策略并发执行。
+- 已完成在线 Reduce 结果融合，支持分数归一化、按 `recipe_id` 去重、模型权重融合和多来源 bonus。
+- 已完成模型超时与异常隔离，单个模型失败或超时不会拖垮整体推荐接口。
 - 已完成离线指标评估。
 - 已完成消融实验报告。
 
@@ -1244,9 +1371,9 @@ tests/test_foodcom_conversion.py
 - 已完成反馈事件发送 Kafka，支持将点击、喜欢、不喜欢、评分等行为写入 `recipe_feedback` topic。
 - 已新增 Kafka 消费端脚本，可消费反馈事件并更新 Redis 实时用户画像。
 - 已新增基于 ALS embedding + FAISS 的实时推荐缓存，用户反馈后可生成 `recipe:realtime_rec:user:{user_id}:k:{top_k}`。
-- 推荐接口已支持优先读取实时推荐缓存，未命中时回退到离线推荐结果。
+- 推荐接口已支持优先读取实时推荐缓存，未命中时依次尝试离线缓存、MapReduce 多模型并发推理、离线 CSV 补齐和热门兜底。
 - 已完成 A/B 分组和指标接口。
-- 已完成 Prometheus 指标接口。
+- 已完成 Prometheus 指标接口，并新增模型推理耗时、模型成功/超时/异常、Reduce 输入输出数量和推荐来源指标。
 
 ### 搜索层
 
@@ -1486,9 +1613,90 @@ $body = @{ user_id=1535; movie_id=101; feedback_type='rating'; feedback_value=5;
 Invoke-RestMethod -Method Post -Uri http://localhost:3000/api/feedback -Body $body -ContentType 'application/json'
 ```
 
-### 19. 测试
+### 19. MapReduce 并发推理验收
+
+先确认并发调度器单元测试通过：
 
 ```powershell
+.\.venv\Scripts\python.exe -m pytest tests\test_parallel_inference.py -q
+```
+
+期望结果：
+
+```text
+2 passed
+```
+
+再确认推荐接口相关测试通过：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests\test_api.py::TestAPIEndpoints::test_recommend tests\test_api.py::TestAPIEndpoints::test_recommend_with_topk tests\test_api.py::TestAPIEndpoints::test_recommend_prefers_realtime_cache -q
+```
+
+期望结果：
+
+```text
+3 passed
+```
+
+启动后端：
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+如果 8000 端口已被旧服务占用，可以先查看并停止旧进程：
+
+```powershell
+netstat -ano | Select-String ':8000'
+Stop-Process -Id <PID>
+```
+
+请求推荐接口，并关闭缓存以便触发并发推理链路：
+
+```powershell
+Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:8000/recipes/recommend/1?top_k=10&use_cache=false"
+```
+
+期望结果：
+
+```text
+StatusCode: 200
+Content 中包含 recommendations
+```
+
+最后查看 `/metrics` 中是否出现并发模型和 Reduce 指标：
+
+```powershell
+$m = (Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:8000/metrics").Content
+$m -split "`n" | Where-Object { $_ -match "model_inference|recommend_reduce|recommend_source" }
+```
+
+如果看到类似下面的输出，就说明并发任务已经在运行态完成：
+
+```text
+model_inference_requests_total{model_name="als",status="success"} 2
+model_inference_requests_total{model_name="content",status="success"} 1
+model_inference_requests_total{model_name="ranker",status="success"} 2
+model_inference_requests_total{model_name="hot",status="timeout"} 2
+recommend_reduce_duration_seconds_count 2
+recommend_reduce_input_count 30
+recommend_reduce_output_count 20
+recommend_source_total{source="parallel_inference"} 1
+```
+
+这些指标表示：
+
+- `model_inference_requests_total`：每个模型被并发调度的次数和状态。
+- `model_inference_result_count`：每个模型返回的候选数量。
+- `recommend_reduce_input_count`：进入 Reduce 的候选总数。
+- `recommend_reduce_output_count`：Reduce 后输出的推荐总数。
+- `recommend_source_total{source="parallel_inference"}`：推荐接口已经使用 MapReduce 并发推理链路返回结果。
+
+### 20. 测试
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests\test_parallel_inference.py -q
 .\.venv\Scripts\python.exe -m pytest tests\test_foodcom_official_splits.py tests\test_content_hot_recall.py tests\test_foodcom_conversion.py -q
 .\.venv\Scripts\python.exe -m pytest tests\test_faiss_hnsw_recall.py tests\test_offline_metrics.py tests\test_ablation_eval.py -q
 .\.venv\Scripts\python.exe -m pytest tests\test_api.py tests\test_ab_monitor_lightgcn.py -q
