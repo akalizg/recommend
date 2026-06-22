@@ -104,6 +104,11 @@ class Settings(BaseSettings):
     recall_top_k: int = 200
     final_top_k: int = 20
     popular_fallback_count: int = 50
+    parallel_inference_enabled: bool = True
+    parallel_inference_max_workers: int = 5
+    parallel_inference_model_timeout_ms: int = 800
+    parallel_inference_overall_timeout_ms: int = 1500
+    parallel_inference_source_bonus: float = 0.05
 
     @field_validator("debug", mode="before")
     @classmethod

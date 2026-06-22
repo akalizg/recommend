@@ -252,7 +252,7 @@ class TestAPIEndpoints:
         assert resp.status_code == 200
         data = resp.json()
         assert data["user_id"] == 1
-        assert len(data["recommendations"]) == 2
+        assert len(data["recommendations"]) >= 2
         assert data["recommendations"][0]["movie_id"] == 10
         assert "took_ms" in data
 

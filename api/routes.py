@@ -1,6 +1,8 @@
 """
 FastAPI route definitions for the recommendation system.
 """
+from __future__ import annotations
+
 import json
 import logging
 import re
@@ -47,7 +49,12 @@ from api.schemas import (
     ABGroupResponse,
     ABMetricsResponse,
 )
-from app.config import PROJECT_ROOT
+from app.config import PROJECT_ROOT, get_settings
+from monitor.metrics import record_model_inference, record_recommend_source, record_reduce
+from recommendation.inference_schemas import InferenceContext, ParallelInferenceResponse, ReducedRecommendation
+from recommendation.model_adapters import default_model_adapters
+from recommendation.parallel_inference import ParallelInferenceService
+from recommendation.result_reducer import ResultReducer
 
 logger = logging.getLogger(__name__)
 
@@ -1032,6 +1039,7 @@ class AppState:
         self.feedback_service = None
         self.ab_service = None
         self.taste_twin_service = None
+        self.parallel_inference_service = None
 
 
 _app_state = AppState()
@@ -1039,6 +1047,96 @@ _app_state = AppState()
 
 def get_state() -> AppState:
     return _app_state
+
+
+def _parallel_inference_context(state: AppState) -> InferenceContext:
+    return InferenceContext(
+        recall_service=state.recall_service,
+        ranking_service=state.ranking_service,
+        pipeline=state.pipeline,
+        read_cached_csv=_read_cached_csv,
+        popular_recipe_records=_popular_recipe_records,
+        offline_recommendations_path=OFFLINE_RECOMMENDATIONS_PATH,
+        offline_movie_profile_path=OFFLINE_MOVIE_PROFILE_PATH,
+        offline_user_profile_path=OFFLINE_USER_PROFILE_PATH,
+    )
+
+
+def _build_parallel_inference_service(state: AppState) -> ParallelInferenceService:
+    settings = get_settings()
+    models = default_model_adapters(include_ranker=state.ranking_service is not None and state.recall_service is not None)
+    reducer = ResultReducer(source_bonus=settings.parallel_inference_source_bonus)
+    return ParallelInferenceService(
+        models=models,
+        reducer=reducer,
+        max_workers=settings.parallel_inference_max_workers,
+        model_timeout_ms=settings.parallel_inference_model_timeout_ms,
+        overall_timeout_ms=settings.parallel_inference_overall_timeout_ms,
+    )
+
+
+def _parallel_recommendation_items(
+    state: AppState,
+    user_id: int,
+    top_k: int,
+) -> tuple[list[MovieItem], ParallelInferenceResponse]:
+    service = _build_parallel_inference_service(state)
+    response = service.recommend(user_id, _parallel_inference_context(state), top_k)
+    _record_parallel_metrics(response)
+    return _items_from_reduced_recommendations(response.recommendations, top_k), response
+
+
+def _record_parallel_metrics(response: ParallelInferenceResponse) -> None:
+    input_count = 0
+    for result in response.model_results:
+        count = len(result.candidates)
+        input_count += count
+        record_model_inference(result.model_name, result.status, result.duration_ms, count)
+    record_reduce(response.reduce_duration_ms, input_count, len(response.recommendations))
+
+
+def _items_from_reduced_recommendations(recommendations: list[ReducedRecommendation], top_k: int) -> list[MovieItem]:
+    recipe_ids = [item.recipe_id for item in recommendations[:top_k]]
+    try:
+        profile_map, _ = _profile_records_by_id(recipe_ids)
+    except HTTPException:
+        profile_map = {}
+
+    items: list[MovieItem] = []
+    for reduced in recommendations[:top_k]:
+        info = {**profile_map.get(reduced.recipe_id, {}), **(reduced.metadata or {})}
+        info.setdefault("final_reason", reduced.reason)
+        info.setdefault("reason_source", ",".join(reduced.sources))
+        items.append(
+            build_movie_item(
+                reduced.recipe_id,
+                f"Recipe {reduced.recipe_id}",
+                reduced.final_score,
+                info,
+            )
+        )
+    return items
+
+
+def _supplement_recommendation_items(user_id: int, items: list[MovieItem], top_k: int) -> list[MovieItem]:
+    if len(items) >= top_k:
+        return items[:top_k]
+    existing = {item.movie_id for item in items}
+    for item in _offline_recommendation_items(user_id, top_k):
+        if item.movie_id not in existing:
+            items.append(item)
+            existing.add(item.movie_id)
+        if len(items) >= top_k:
+            return items[:top_k]
+    popular_records, _ = _popular_recipe_records(top_k)
+    for record in popular_records:
+        recipe_id = int(record["movie_id"])
+        if recipe_id not in existing:
+            items.append(build_movie_item(recipe_id, record["title"], float(record.get("score") or 0.0), record))
+            existing.add(recipe_id)
+        if len(items) >= top_k:
+            break
+    return items[:top_k]
 
 
 # ---------- Health ----------
@@ -1110,6 +1208,7 @@ async def recommend(
             elapsed = (time.perf_counter() - t0) * 1000
             realtime_result["cached"] = True
             realtime_result["took_ms"] = round(elapsed, 2)
+            record_recommend_source("redis_realtime")
             return RecommendationResponse(**realtime_result)
 
     cache_key = f"recipe:offline_rec:user:{user_id}:k:{top_k}"
@@ -1119,9 +1218,36 @@ async def recommend(
             elapsed = (time.perf_counter() - t0) * 1000
             cached_result["cached"] = True
             cached_result["took_ms"] = round(elapsed, 2)
+            record_recommend_source("redis_offline")
             return RecommendationResponse(**cached_result)
 
-    items = await run_in_threadpool(_offline_recommendation_items, user_id, top_k)
+    settings = get_settings()
+    source = "final_csv"
+    items: list[MovieItem] = []
+    if settings.parallel_inference_enabled:
+        try:
+            parallel_items, parallel_response = await run_in_threadpool(
+                _parallel_recommendation_items,
+                state,
+                user_id,
+                top_k,
+            )
+            items = parallel_items
+            if items:
+                source = parallel_response.source
+        except Exception as exc:
+            logger.warning("Parallel inference failed for user=%s: %s", user_id, exc, exc_info=True)
+
+    if items:
+        items = await run_in_threadpool(_supplement_recommendation_items, user_id, items, top_k)
+    else:
+        items = await run_in_threadpool(_offline_recommendation_items, user_id, top_k)
+        source = "final_csv"
+
+    if not items:
+        items = await run_in_threadpool(_supplement_recommendation_items, user_id, [], top_k)
+        source = "popular_fallback"
+    record_recommend_source(source)
 
     elapsed = (time.perf_counter() - t0) * 1000
     result = RecommendationResponse(
