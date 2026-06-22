@@ -118,6 +118,10 @@ export function copyTasteTwinRecipe(userId, movieId) {
   return api.post(`/taste-twin/${userId}/copy/${movieId}`);
 }
 
+export function rateTasteTwinRecipe(userId, movieId, rating) {
+  return api.post(`/taste-twin/${userId}/rate/${movieId}`, { rating });
+}
+
 export function getTasteTwinJointMenu(userId, twinUserId, offset = 0) {
   return api.get(`/taste-twin/${userId}/joint-menu/${twinUserId}`, { params: { offset } });
 }

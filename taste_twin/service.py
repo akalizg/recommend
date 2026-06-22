@@ -23,6 +23,7 @@ from .schemas import (
     TasteTwinRecord,
     TasteTwinRecordMutationResponse,
     TasteTwinRecordsResponse,
+    TasteTwinRatingResponse,
     TasteTwinSettingsResponse,
     TasteTwinSettingsUpdate,
     TwinMatchCard,
@@ -99,6 +100,9 @@ class TasteTwinService:
 
     async def copy_recipe(self, user_id: int, movie_id: int) -> CopyRecipeResponse:
         return await asyncio.to_thread(self._copy_recipe, user_id, movie_id)
+
+    async def rate_recipe(self, user_id: int, movie_id: int, rating: int) -> TasteTwinRatingResponse:
+        return await asyncio.to_thread(self._rate_recipe, user_id, movie_id, rating)
 
     async def joint_menu(self, user_id: int, twin_user_id: int, offset: int) -> JointMenuResponse:
         return await asyncio.to_thread(self._joint_menu, user_id, twin_user_id, offset)
@@ -395,6 +399,52 @@ class TasteTwinService:
                 (int(user_id), int(movie_id)),
             )
             conn.commit()
+
+    def _rate_recipe(self, user_id: int, movie_id: int, rating: int) -> TasteTwinRatingResponse:
+        self._require_discoverable(user_id)
+        score = int(rating)
+        if score < 1 or score > 5:
+            raise HTTPException(status_code=422, detail="评分必须是 1 到 5 分")
+
+        created_at = datetime.now(timezone.utc).isoformat()
+        self.paths.recommendation_db_path.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(self.paths.recommendation_db_path) as conn:
+            conn.execute("INSERT INTO users (user_id) VALUES (?) ON CONFLICT(user_id) DO NOTHING", (int(user_id),))
+            conn.execute(
+                """
+                INSERT INTO movies (movie_id, title)
+                VALUES (?, ?)
+                ON CONFLICT(movie_id) DO NOTHING
+                """,
+                (int(movie_id), self._recipe_from_profile(movie_id, 0).title),
+            )
+            conn.execute(
+                """
+                DELETE FROM feedback_logs
+                WHERE user_id = ? AND movie_id = ?
+                  AND feedback_type = 'rating'
+                  AND request_id = 'taste-twin-rating'
+                  AND run_id = 'taste_twin_rating'
+                """,
+                (int(user_id), int(movie_id)),
+            )
+            conn.execute(
+                """
+                INSERT INTO feedback_logs (user_id, movie_id, feedback_type, feedback_value, request_id, run_id, created_at)
+                VALUES (?, ?, 'rating', ?, 'taste-twin-rating', 'taste_twin_rating', ?)
+                """,
+                (int(user_id), int(movie_id), float(score), created_at),
+            )
+            conn.execute(
+                """
+                INSERT INTO recommendation_logs (request_id, user_id, movie_id, score, reason, model_name, run_id, event_type, created_at)
+                VALUES ('taste-twin-rating', ?, ?, ?, 'rated_from_taste_twin', 'taste_twin', 'taste_twin_rating', 'rating', ?)
+                """,
+                (int(user_id), int(movie_id), float(score), created_at),
+            )
+            conn.commit()
+
+        return TasteTwinRatingResponse(user_id=user_id, movie_id=movie_id, rating=score, message=f"已评分 {score} 分")
 
     def _joint_menu(self, user_id: int, twin_user_id: int, offset: int) -> JointMenuResponse:
         self._require_discoverable(user_id)

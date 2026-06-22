@@ -11,6 +11,8 @@ from .schemas import (
     JointMenuResponse,
     TasteTwinRecordMutationResponse,
     TasteTwinRecordsResponse,
+    TasteTwinRatingRequest,
+    TasteTwinRatingResponse,
     TasteTwinSettingsResponse,
     TasteTwinSettingsUpdate,
     TwinMatchCard,
@@ -72,6 +74,16 @@ async def taste_twin_profile(
 @router.post("/{user_id}/copy/{movie_id}", response_model=CopyRecipeResponse)
 async def copy_taste_twin_recipe(user_id: int, movie_id: int, service: TasteTwinService = Depends(get_taste_twin_service)) -> CopyRecipeResponse:
     return await service.copy_recipe(user_id, movie_id)
+
+
+@router.post("/{user_id}/rate/{movie_id}", response_model=TasteTwinRatingResponse)
+async def rate_taste_twin_recipe(
+    user_id: int,
+    movie_id: int,
+    payload: TasteTwinRatingRequest,
+    service: TasteTwinService = Depends(get_taste_twin_service),
+) -> TasteTwinRatingResponse:
+    return await service.rate_recipe(user_id, movie_id, payload.rating)
 
 
 @router.get("/{user_id}/joint-menu/{twin_user_id}", response_model=JointMenuResponse)

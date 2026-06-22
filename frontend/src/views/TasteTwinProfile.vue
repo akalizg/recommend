@@ -32,7 +32,14 @@
       <section class="rounded-lg border border-slate-700 bg-slate-900 p-5">
         <h2 class="text-lg font-semibold text-gray-100">Ta 觉得绝顶好吃，而你还没看过</h2>
         <div v-if="profile.recommended_recipes.length" class="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-          <RecipeActionCard v-for="recipe in profile.recommended_recipes" :key="recipe.movie_id" :recipe="recipe" @toggle="toggleFavorite" />
+          <RecipeActionCard
+            v-for="recipe in profile.recommended_recipes"
+            :key="recipe.movie_id"
+            :recipe="recipe"
+            :current-rating="ratedRecipes[recipe.movie_id]"
+            :submitting="ratingRecipeId === recipe.movie_id"
+            @rate="rateRecipe"
+          />
         </div>
         <p v-else class="mt-4 rounded-lg border border-slate-700 p-4 text-sm text-slate-400">暂时没有新的可抄菜谱。</p>
       </section>
@@ -47,7 +54,9 @@
         :loading="loadingHigh"
         @prev="changeHighPage(profile.high_page - 1)"
         @next="changeHighPage(profile.high_page + 1)"
-        @toggle="toggleFavorite"
+        :current-ratings="ratedRecipes"
+        :submitting-id="ratingRecipeId"
+        @rate="rateRecipe"
       />
 
       <PagedRecipeSection
@@ -60,11 +69,13 @@
         :loading="loadingLow"
         @prev="changeLowPage(profile.low_page - 1)"
         @next="changeLowPage(profile.low_page + 1)"
-        @toggle="toggleFavorite"
+        :current-ratings="ratedRecipes"
+        :submitting-id="ratingRecipeId"
+        @rate="rateRecipe"
       />
 
-      <div v-if="copyMessage" class="rounded-lg border border-emerald-500/30 bg-emerald-950/30 p-3 text-sm text-emerald-100">
-        {{ copyMessage }}
+      <div v-if="ratingMessage" class="rounded-lg border border-emerald-500/30 bg-emerald-950/30 p-3 text-sm text-emerald-100">
+        {{ ratingMessage }}
       </div>
     </template>
   </div>
@@ -74,7 +85,7 @@
 import { defineComponent, h, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import MovieCard from "../components/MovieCard.vue";
-import { copyTasteTwinRecipe, getTasteTwinProfile } from "../api";
+import { getTasteTwinProfile, rateTasteTwinRecipe } from "../api";
 import { getCurrentUser } from "../utils/session";
 
 const route = useRoute();
@@ -87,22 +98,14 @@ const loading = ref(false);
 const loadingHigh = ref(false);
 const loadingLow = ref(false);
 const error = ref("");
-const copyMessage = ref("");
+const ratingMessage = ref("");
+const ratingRecipeId = ref(null);
+const ratedRecipes = ref({});
 
 async function loadProfile(highPage = 1, lowPage = 1) {
   if (!userId) throw new Error("请先登录后查看饭搭子主页");
   const { data } = await getTasteTwinProfile(userId, twinUserId, highPage, lowPage, 12);
   profile.value = data;
-}
-
-function updateCollectionState(movieId, isCollected) {
-  if (!profile.value) return;
-  const groups = [profile.value.recommended_recipes, profile.value.high_rated_recipes, profile.value.low_rated_recipes];
-  groups.forEach((recipes) => {
-    recipes.forEach((recipe) => {
-      if (Number(recipe.movie_id) === Number(movieId)) recipe.is_collected = isCollected;
-    });
-  });
 }
 
 async function changeHighPage(page) {
@@ -125,28 +128,52 @@ async function changeLowPage(page) {
   }
 }
 
-async function toggleFavorite(recipe) {
+async function rateRecipe(recipe, rating) {
   if (!userId) return;
-  const { data } = await copyTasteTwinRecipe(userId, recipe.movie_id);
-  updateCollectionState(recipe.movie_id, Boolean(data.copied));
-  copyMessage.value = data.message || (data.copied ? "已收藏" : "已取消收藏");
-  window.setTimeout(() => {
-    copyMessage.value = "";
-  }, 1800);
+  ratingRecipeId.value = recipe.movie_id;
+  try {
+    const { data } = await rateTasteTwinRecipe(userId, recipe.movie_id, rating);
+    ratedRecipes.value = { ...ratedRecipes.value, [recipe.movie_id]: data.rating };
+    ratingMessage.value = data.message || `已评分 ${rating} 分`;
+    window.setTimeout(() => {
+      ratingMessage.value = "";
+    }, 1800);
+  } catch (err) {
+    error.value = err?.response?.data?.detail || "评分失败";
+  } finally {
+    ratingRecipeId.value = null;
+  }
 }
 
 const RecipeActionCard = defineComponent({
-  props: { recipe: { type: Object, required: true } },
-  emits: ["toggle"],
+  props: {
+    recipe: { type: Object, required: true },
+    currentRating: { type: Number, default: null },
+    submitting: { type: Boolean, default: false },
+  },
+  emits: ["rate"],
   setup(props, { emit }) {
     return () => h("div", { class: "space-y-2" }, [
       h(MovieCard, { movie: props.recipe }),
-      h("button", {
-        class: props.recipe.is_collected
-          ? "w-full rounded-full border border-emerald-400 bg-emerald-500/15 px-3 py-2 text-sm font-medium text-emerald-100 hover:border-red-400 hover:text-red-100"
-          : "w-full rounded-full bg-primary-600 px-3 py-2 text-sm font-medium text-white hover:bg-primary-500",
-        onClick: () => emit("toggle", props.recipe),
-      }, props.recipe.is_collected ? "已收藏" : "一键收藏"),
+      h("div", { class: "rounded-lg border border-slate-700 bg-slate-950/70 p-2" }, [
+        h("div", { class: "flex items-center justify-between gap-2" }, [
+          h("span", { class: "text-xs font-medium text-slate-300" }, props.currentRating ? `已评分 ${props.currentRating} 分` : "给这道菜评分"),
+          h("span", { class: "text-[11px] text-slate-500" }, "1-5 分"),
+        ]),
+        h("div", { class: "mt-2 grid grid-cols-5 gap-1" }, [1, 2, 3, 4, 5].map((rating) =>
+          h("button", {
+            type: "button",
+            class: [
+              "h-9 rounded-md border text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-60",
+              Number(props.currentRating) === rating
+                ? "border-amber-300 bg-amber-300 text-slate-950"
+                : "border-slate-700 bg-slate-800 text-slate-200 hover:border-amber-300 hover:text-amber-100",
+            ],
+            disabled: props.submitting,
+            onClick: () => emit("rate", props.recipe, rating),
+          }, String(rating))
+        )),
+      ]),
     ]);
   },
 });
@@ -160,8 +187,10 @@ const PagedRecipeSection = defineComponent({
     total: Number,
     hasMore: Boolean,
     loading: Boolean,
+    currentRatings: Object,
+    submittingId: Number,
   },
-  emits: ["prev", "next", "toggle"],
+  emits: ["prev", "next", "rate"],
   setup(props, { emit }) {
     return () => h("section", { class: "rounded-lg border border-slate-700 bg-slate-900 p-5" }, [
       h("div", { class: "flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between" }, [
@@ -185,7 +214,13 @@ const PagedRecipeSection = defineComponent({
       ]),
       props.recipes?.length
         ? h("div", { class: "mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4" }, props.recipes.map((recipe) =>
-            h(RecipeActionCard, { key: recipe.movie_id, recipe, onToggle: (item) => emit("toggle", item) })
+            h(RecipeActionCard, {
+              key: recipe.movie_id,
+              recipe,
+              currentRating: props.currentRatings?.[recipe.movie_id] || null,
+              submitting: props.submittingId === recipe.movie_id,
+              onRate: (item, rating) => emit("rate", item, rating),
+            })
           ))
         : h("p", { class: "mt-4 rounded-lg border border-slate-700 p-4 text-sm text-slate-400" }, props.emptyText),
     ]);

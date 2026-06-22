@@ -68,6 +68,17 @@ class CopyRecipeResponse(BaseModel):
     message: str
 
 
+class TasteTwinRatingRequest(BaseModel):
+    rating: int = Field(..., ge=1, le=5)
+
+
+class TasteTwinRatingResponse(BaseModel):
+    user_id: int
+    movie_id: int
+    rating: int
+    message: str
+
+
 class JointMenuResponse(BaseModel):
     twin_user_id: int
     offset: int
