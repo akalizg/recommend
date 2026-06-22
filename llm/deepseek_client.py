@@ -18,7 +18,7 @@ except ImportError:  # pragma: no cover - runtime dependency fallback
 
 DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
 DEEPSEEK_API_KEY = "sk-6a2163270b6a476a851951e09aaa1487"
-DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
 
 
 def _build_client() -> OpenAI | None:
