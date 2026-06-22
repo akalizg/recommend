@@ -257,7 +257,7 @@ class TasteTwinService:
         raise HTTPException(status_code=410, detail="本地演示搭子已关闭，请使用真实用户社区匹配")
 
     def _match_twins(self, user_id: int, limit: int) -> List[TwinMatchCard]:
-        current = self._require_discoverable(user_id)
+        current = self._enriched_public_settings(self._require_discoverable(user_id))
         matches = self._rerank_matches(user_id, self.user_index.search(user_id, max(limit, 10) * 4))
         cards: List[TwinMatchCard] = []
         for twin_user_id, cosine_score in matches:
@@ -270,7 +270,7 @@ class TasteTwinService:
             cards.append(
                 TwinMatchCard(
                     user_id=twin_user_id,
-                    community_alias=twin.community_alias or f"吃货_{twin_user_id}",
+                    community_alias=twin.community_alias or self._public_alias(twin_user_id),
                     match_score=round(max(0.0, min(1.0, cosine_score)) * 100, 1),
                     shared_tags=self._shared_tags(current.preference_tags, twin.preference_tags),
                     top_preference_tags=twin.preference_tags[:3],
@@ -297,7 +297,7 @@ class TasteTwinService:
         recommended = self._with_collection_state(self._unseen_high_rated_by_twin(user_id, twin_user_id, limit=5), user_id)
         return TwinProfileResponse(
             user_id=twin_user_id,
-            community_alias=twin.community_alias or f"吃货_{twin_user_id}",
+            community_alias=twin.community_alias or self._public_alias(twin_user_id),
             match_score=self._match_score_for(user_id, twin_user_id),
             top_preference_tags=twin.preference_tags[:3],
             recommended_recipes=recommended,
@@ -548,7 +548,19 @@ class TasteTwinService:
 
     def _get_public_user(self, user_id: int) -> Optional[TasteTwinSettingsResponse]:
         settings = self._get_settings(user_id)
-        return settings if settings.is_discoverable else None
+        if not settings.is_discoverable:
+            return None
+        return self._enriched_public_settings(settings)
+
+    def _enriched_public_settings(self, settings: TasteTwinSettingsResponse) -> TasteTwinSettingsResponse:
+        tags = settings.preference_tags or self._default_tags(settings.user_id)
+        alias = settings.community_alias or self._public_alias(settings.user_id)
+        return TasteTwinSettingsResponse(
+            user_id=settings.user_id,
+            is_discoverable=settings.is_discoverable,
+            community_alias=alias,
+            preference_tags=tags[:12],
+        )
 
     def _rating_count(self, user_id: int, high: bool) -> int:
         ratings = self._ratings_for_user(user_id)
@@ -648,6 +660,45 @@ class TasteTwinService:
     def _default_tags(self, user_id: int) -> List[str]:
         profile = self._profile_by_user_id.get(int(user_id), {})
         return self._split_pipe(profile.get("favorite_genres"))[:5]
+
+    def _public_alias(self, user_id: int) -> str:
+        tags = self._default_tags(user_id)
+        tag_set = set(tags)
+        generic_tags = {"course", "preparation", "time-to-make", "dietary", "main-ingredient"}
+        if {"desserts", "sweet", "chocolate"} & tag_set:
+            prefix = "甜品收藏家"
+        elif {"healthy", "low-fat", "low-calorie", "vegetarian", "vegan"} & tag_set:
+            prefix = "清爽轻食派"
+        elif {"spicy", "mexican", "thai", "indian"} & tag_set:
+            prefix = "香辣探索家"
+        elif {"breakfast", "brunch", "15-minutes-or-less", "30-minutes-or-less"} & tag_set:
+            prefix = "快手早餐党"
+        elif {"main-dish", "dinner-party", "comfort-food"} & tag_set:
+            prefix = "正餐研究员"
+        elif {"chicken", "beef", "pork", "seafood", "fish"} & tag_set:
+            prefix = "蛋白质猎手"
+        elif tag_set <= generic_tags:
+            prefix = "全能食谱党"
+        elif tags:
+            label_map = {
+                "easy": "简单菜",
+                "quick-and-easy": "快手菜",
+                "american": "美式菜",
+                "asian": "亚洲菜",
+                "italian": "意式菜",
+                "mexican": "墨西哥菜",
+                "salads": "沙拉",
+                "soups-stews": "汤羹",
+                "appetizers": "前菜",
+                "snacks": "小食",
+                "lunch": "午餐",
+                "side-dishes": "配菜",
+            }
+            signal_tag = next((tag for tag in tags if tag not in generic_tags), tags[0])
+            prefix = f"{label_map.get(signal_tag, signal_tag)}同好"
+        else:
+            prefix = "口味探索者"
+        return f"{prefix}_{int(user_id)}"
 
     @staticmethod
     def _shared_tags(left: Sequence[str], right: Sequence[str]) -> List[str]:

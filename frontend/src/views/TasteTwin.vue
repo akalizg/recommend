@@ -290,6 +290,13 @@ const userId = computed(() => currentUser.value?.user_id || null);
 const parsedTags = computed(() => tagInput.value.split(",").map((tag) => tag.trim()).filter(Boolean).slice(0, 12));
 const visibleMatches = computed(() => matches.value.slice(matchPage.value * 5, matchPage.value * 5 + 5));
 
+function shuffleMatches(items) {
+  return [...items]
+    .map((item) => ({ item, sort: Math.random() }))
+    .sort((left, right) => left.sort - right.sort)
+    .map(({ item }) => item);
+}
+
 function displayTags(match) {
   return match.shared_tags?.length ? match.shared_tags : match.top_preference_tags;
 }
@@ -367,9 +374,11 @@ async function loadMatches(resetPage = false) {
   loading.value = true;
   error.value = "";
   try {
-    const { data } = await getTasteTwinMatches(userId.value, 10);
-    matches.value = data || [];
+    const { data } = await getTasteTwinMatches(userId.value, 20);
+    matches.value = resetPage ? shuffleMatches(data || []) : (data || []);
     if (resetPage || matchPage.value * 5 >= matches.value.length) matchPage.value = 0;
+    jointMenu.value = null;
+    activeTwinId.value = null;
   } catch (err) {
     error.value = err?.response?.data?.detail || "寻找饭搭子失败";
   } finally {
@@ -383,8 +392,13 @@ async function rotateMatches() {
     return;
   }
   const groupCount = Math.max(1, Math.ceil(matches.value.length / 5));
-  matchPage.value = (matchPage.value + 1) % groupCount;
-  await loadMatches(false);
+  if (groupCount > 1) {
+    matchPage.value = (matchPage.value + 1) % groupCount;
+    jointMenu.value = null;
+    activeTwinId.value = null;
+    return;
+  }
+  await loadMatches(true);
 }
 
 function openProfile(twinUserId) {
