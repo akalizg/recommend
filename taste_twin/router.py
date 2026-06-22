@@ -21,13 +21,24 @@ from .service import TasteTwinService
 router = APIRouter(prefix="/taste-twin", tags=["Taste Twin"])
 
 
-def get_taste_twin_service(state=Depends(get_state)) -> TasteTwinService:
+async def get_taste_twin_service(state=Depends(get_state)) -> TasteTwinService:
     service = getattr(state, "taste_twin_service", None)
     if service is None:
-        from taste_twin.service import TasteTwinService
         service = TasteTwinService.create_default()
         setattr(state, "taste_twin_service", service)
-        asyncio.create_task(asyncio.to_thread(service.initialize))
+        setattr(state, "taste_twin_init_task", asyncio.create_task(asyncio.to_thread(service.initialize)))
+
+    init_task = getattr(state, "taste_twin_init_task", None)
+    if init_task is not None:
+        try:
+            await init_task
+        except Exception:
+            setattr(state, "taste_twin_service", None)
+            setattr(state, "taste_twin_init_task", None)
+            raise
+        else:
+            if getattr(state, "taste_twin_init_task", None) is init_task:
+                setattr(state, "taste_twin_init_task", None)
     return service
 
 
