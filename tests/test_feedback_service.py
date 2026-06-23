@@ -56,15 +56,21 @@ class MemoryCache:
         return True
 
 
+class NoopKafkaProducer:
+    def send_event(self, event):
+        return False
+
+
 def test_feedback_service_records_and_updates_profile(tmp_path):
     from feedback.feedback_service import FeedbackService
+    from monitor.metrics import build_prometheus_metrics
 
     db_path = tmp_path / "recommendations.db"
     with sqlite3.connect(db_path) as conn:
         conn.executescript(SCHEMA)
 
     cache = MemoryCache()
-    service = FeedbackService(db_path=db_path, cache=cache)
+    service = FeedbackService(db_path=db_path, cache=cache, kafka_producer=NoopKafkaProducer())
     result = service.record_feedback(
         user_id=1,
         movie_id=10,
@@ -81,6 +87,26 @@ def test_feedback_service_records_and_updates_profile(tmp_path):
     with sqlite3.connect(db_path) as conn:
         assert conn.execute("SELECT COUNT(*) FROM feedback_logs").fetchone()[0] == 1
         assert conn.execute("SELECT event_type FROM recommendation_logs").fetchone()[0] == "like"
+    metrics = build_prometheus_metrics(db_path=db_path)
+    assert "# TYPE feedback_events_total counter" in metrics
+    assert 'feedback_event_type_total{event_type="like"}' in metrics
+    assert "# TYPE recommend_collect_total counter" in metrics
+
+
+def test_feedback_service_records_exposure_metric(tmp_path):
+    from feedback.feedback_service import FeedbackService
+    from monitor.metrics import build_prometheus_metrics
+
+    db_path = tmp_path / "recommendations.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(SCHEMA)
+
+    service = FeedbackService(db_path=db_path, kafka_producer=NoopKafkaProducer())
+    result = service.record_exposure(user_id=1, movie_id=10, request_id="req-1")
+
+    assert result["event_type"] == "exposure"
+    metrics = build_prometheus_metrics(db_path=db_path)
+    assert "# TYPE recommend_exposure_total counter" in metrics
 
 
 def test_feedback_service_rejects_unknown_type(tmp_path):
@@ -90,7 +116,7 @@ def test_feedback_service_rejects_unknown_type(tmp_path):
     with sqlite3.connect(db_path) as conn:
         conn.executescript(SCHEMA)
 
-    service = FeedbackService(db_path=db_path)
+    service = FeedbackService(db_path=db_path, kafka_producer=NoopKafkaProducer())
     try:
         service.record_feedback(1, 10, "unknown")
     except ValueError as exc:

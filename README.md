@@ -2,7 +2,7 @@
 
 RecipeRec 是一个基于 Food.com 数据集构建的个性化食谱推荐系统，面向“用户不知道做什么菜、想发现更符合口味和场景的食谱”这一典型需求，提供从离线训练、在线推荐、搜索详情、实时反馈到效果评估的完整推荐系统链路。
 
-当前系统已经接入 Food.com 官方训练集、验证集和测试集划分，完成了离线推荐链路、增强排序模型对比、冷启动推荐、实时反馈闭环、MapReduce 风格多模型并发推理、前后端接口、Elasticsearch 搜索、推荐理由、图片增强、MinIO 产物同步、A/B 实验基础能力和监控指标基础能力。
+当前系统已经接入 Food.com 官方训练集、验证集和测试集划分，完成了离线推荐链路、增强排序模型对比、冷启动推荐、实时反馈闭环、MapReduce 风格多模型并发推理、前后端接口、Elasticsearch 搜索、推荐理由、图片增强、MinIO 产物同步、A/B 实验基础能力、Prometheus 指标和 Grafana 系统/模型推理监控看板。
 
 ## 目录
 
@@ -313,14 +313,14 @@ Kafka 反馈事件 / Redis 实时画像 / FAISS 实时推荐缓存
 
 | 能力方向 | 当前状态 | 后续可补充内容 |
 | --- | --- | --- |
-| 冷启动推荐 | 已支持显式偏好冷启动推荐 | 后续接入前端新用户引导页，继续补充过敏原、忌口、厨房设备等偏好 |
+| 冷启动推荐 | 已支持显式偏好冷启动推荐，并接入前端新用户引导页和专属菜谱推荐 | 后续可继续补充过敏原、厨房设备、预算和家庭人数等偏好 |
 | 反馈回流训练 | 已记录反馈并写入 Kafka/Redis/SQLite | 将点击、喜欢、评分等反馈周期性合并进训练样本，参与下一轮离线训练 |
 | 实时推荐排序 | 已实现 Kafka 消费 + FAISS 实时推荐缓存 | 在实时召回后增加轻量排序，例如时间衰减、反馈强度、食谱评分、图片可用性 |
 | 离线任务调度 | 已有脚本化离线链路和 Spark 集群验证 | 增加 Airflow/Azkaban 调度，每天自动跑画像、召回、排序、评估和索引更新 |
 | 分布式存储 | 已接入 MinIO 作为离线产物中心，支持 Spark 产物上传和本地后端下载 | 后续可继续接入 HDFS，让 Spark 多节点直接读取同一份全量输入数据 |
 | 在线实验分析 | 已有 A/B 分组和基础指标 | 增加实验看板，展示不同模型组的曝光、点击、喜欢、转化和留存指标 |
 | 推荐可解释性 | 已有模板推荐理由 | 后续可接入本地 Qwen，对推荐理由进行自然语言增强 |
-| 监控可视化 | 已输出 Prometheus 格式指标 | 增加 Grafana 面板，展示接口延迟、QPS、缓存命中率、Kafka 消费量和反馈率 |
+| 监控可视化 | 已输出 Prometheus 格式指标，并提供系统性能与模型推理 Grafana 双看板 | 后续可增加告警规则、日志聚合、链路追踪和数据库慢查询监控 |
 
 ## 七、技术路线
 
@@ -389,7 +389,7 @@ Prefix: offline/latest
 - 反馈接口记录点击、喜欢、不喜欢、评分等行为。
 - 曝光接口记录推荐展示日志。
 - A/B 接口返回稳定实验分组。
-- 监控接口输出 Prometheus 文本指标。
+- 监控接口输出 Prometheus 文本指标，并通过 Grafana 展示系统资源、HTTP、推荐业务、反馈业务和模型推理指标。
 
 当前在线推荐已经不只是“输入用户 ID 返回一组推荐”，而是按不同使用场景拆分为多种推荐入口：
 
@@ -474,6 +474,15 @@ recommend_reduce_input_count
 recommend_reduce_output_count
 recommend_source_total
 ```
+
+模型推理指标已单独配置 Grafana 看板，避免和系统资源、HTTP、推荐业务、反馈业务指标混在同一页面：
+
+```text
+RecipeRec System Monitoring
+RecipeRec Model Inference Monitoring
+```
+
+系统看板关注服务健康、Redis 状态、CPU、内存、进程资源、磁盘、网络、HTTP QPS、接口耗时、状态码、异常、推荐来源、缓存命中、兜底和反馈事件；模型看板关注各模型调用次数、成功、失败、超时、平均耗时、候选数量、Reduce 输入输出和 `parallel_inference` 来源。
 
 ### 5. 实时反馈与实时推荐路线
 
@@ -944,8 +953,15 @@ quick chicken soup with buttermilk dumplings
 - 评分。
 - 评论/评分数量。
 - 标签或简要信息。
+- 点击卡片可进入对应食谱详情页。
 
 推荐页顶部会展示当前链路标签，例如 `LightGBM main ranker`、`MMR Top10`、`Content cold start`，用于说明当前推荐系统不是单一路径，而是由个性化排序、内容冷启动和探索重排共同组成。
+
+首页的专属菜谱推荐、新用户偏好引导后的冷启动推荐、智能对话推荐结果、搜索结果和相似食谱卡片均已统一接入详情页跳转，前端路由为：
+
+```text
+/recipe/{movie_id}
+```
 
 ### 3. 登录注册页
 
@@ -1374,6 +1390,7 @@ tests/test_foodcom_conversion.py
 - 推荐接口已支持优先读取实时推荐缓存，未命中时依次尝试离线缓存、MapReduce 多模型并发推理、离线 CSV 补齐和热门兜底。
 - 已完成 A/B 分组和指标接口。
 - 已完成 Prometheus 指标接口，并新增模型推理耗时、模型成功/超时/异常、Reduce 输入输出数量和推荐来源指标。
+- 已完成系统性能监控指标，覆盖服务健康、Redis、CPU、内存、进程资源、磁盘、网络、HTTP 请求、接口耗时、状态码、异常、推荐业务和反馈事件。
 
 ### 搜索层
 
@@ -1394,6 +1411,7 @@ tests/test_foodcom_conversion.py
 - 推荐页已接入前端反馈按钮，支持登录用户对推荐结果进行 `Like`、`Dislike` 和 1-5 分评分，并写入后端 `/feedback` 接口。
 - 搜索页已接入食谱搜索。
 - 详情页已展示配料、步骤、营养、人份、作者、原链接和相似食谱。
+- 推荐页、搜索页、智能对话推荐、专属菜谱推荐、冷启动推荐和相似食谱卡片均支持点击进入对应菜谱详情页。
 - 卡片评分已改为真实评分字段，不再展示内部模型分数。
 
 ### 工程层
@@ -1408,6 +1426,7 @@ tests/test_foodcom_conversion.py
 - 已补充相关测试。
 - 已跑通关键编译检查和轻量测试。
 - 已完成本地联调验证：FastAPI 后端运行在 `http://localhost:8000`，Vue 前端运行在 `http://localhost:3000`，前端 `/api` 可正常代理到后端。
+- 已完成 Prometheus + Grafana 监控联调，支持本地 Grafana 和 Docker Grafana 共用 `config/grafana/dashboards/` 下的系统性能与模型推理看板。
 - 已通过真实数据 smoke 测试：`ingredients`、`personalized`、`explore` 三类场景推荐接口均可返回结果。
 - 已通过前端代理反馈 smoke 测试：`POST http://localhost:3000/api/feedback` 可正常写入评分反馈并返回实时画像状态。
 - 已通过真实 HTTP 登录注册 smoke 测试：注册账号、登录账号、读取绑定用户 ID 并请求个性化推荐均可正常返回。
@@ -1693,7 +1712,68 @@ recommend_source_total{source="parallel_inference"} 1
 - `recommend_reduce_output_count`：Reduce 后输出的推荐总数。
 - `recommend_source_total{source="parallel_inference"}`：推荐接口已经使用 MapReduce 并发推理链路返回结果。
 
-### 20. 测试
+### 20. Prometheus 和 Grafana 监控看板
+
+本地 Windows 环境可以使用脚本启动 Prometheus 和 Grafana：
+
+```powershell
+.\scripts\start_local_monitoring.ps1
+```
+
+如果 Prometheus 不在系统 PATH 中，可以显式传入 `prometheus.exe`：
+
+```powershell
+.\scripts\start_local_monitoring.ps1 -PrometheusExe "D:\prometheus\prometheus.exe"
+```
+
+本地访问地址：
+
+```text
+Prometheus: http://localhost:9090
+Grafana:    http://localhost:3001
+Login:      admin / admin
+```
+
+团队如果使用 Docker 验收，可以启动监控编排：
+
+```powershell
+docker compose -f docker-compose.monitor.yml up -d
+```
+
+Docker Grafana 和本地 Grafana 共用项目中的看板目录：
+
+```text
+config/grafana/dashboards/
+```
+
+当前看板包括：
+
+```text
+RecipeRec System Monitoring
+RecipeRec Model Inference Monitoring
+```
+
+系统看板用于查看服务健康、Redis、CPU、内存、进程资源、磁盘、网络、HTTP QPS、接口耗时、状态码、异常、推荐来源、缓存命中、兜底和反馈事件。
+
+模型推理看板用于查看模型调用次数、成功、失败、超时、平均耗时、候选数量、Reduce 输入输出和 `parallel_inference` 来源。
+
+触发模型推理监控数据时，建议关闭本次推荐请求的缓存读取：
+
+```powershell
+Invoke-RestMethod "http://127.0.0.1:8000/recommend/1535?top_k=10&use_cache=false"
+```
+
+Prometheus 中可以查询：
+
+```promql
+model_inference_requests_total
+recommend_reduce_input_count
+recommend_source_total{source="parallel_inference"}
+```
+
+注意：`.monitor/` 是本地 Grafana/Prometheus 运行目录，不需要提交到仓库；团队验收应以 `config/grafana/dashboards/` 和 `config/grafana/provisioning/` 为准。
+
+### 21. 测试
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests\test_parallel_inference.py -q
@@ -1701,6 +1781,7 @@ recommend_source_total{source="parallel_inference"} 1
 .\.venv\Scripts\python.exe -m pytest tests\test_faiss_hnsw_recall.py tests\test_offline_metrics.py tests\test_ablation_eval.py -q
 .\.venv\Scripts\python.exe -m pytest tests\test_api.py tests\test_ab_monitor_lightgcn.py -q
 .\.venv\Scripts\python.exe -m pytest tests\test_minio_artifacts.py tests\test_kafka_feedback.py tests\test_cold_start.py -q
+.\.venv\Scripts\python.exe -m pytest tests\test_monitor_metrics.py tests\test_parallel_inference.py -q
 cd frontend
 npm run build
 ```
@@ -1729,7 +1810,7 @@ npm run build
 
 6. 升级冷启动推荐体验。
 
-   当前后端已经支持根据口味、食材、烹饪时间、饮食目标和图片要求生成冷启动推荐，前端推荐控制台也已经接入食材、健康和快手菜场景。后续可以继续增加新用户引导页，并补充更多偏好维度，例如过敏原、忌口、厨房设备、预算和家庭人数。
+   当前后端已经支持根据口味、食材、烹饪时间、饮食目标和图片要求生成冷启动推荐，前端推荐控制台、新用户引导页和首页专属菜谱推荐都已接入冷启动推荐结果。后续可以继续补充更多偏好维度，例如过敏原、厨房设备、预算和家庭人数。
 
 7. 建立反馈回流训练机制。
 
@@ -1749,4 +1830,4 @@ npm run build
 
 11. 前端美化。
 
-   当前前端已经完成食谱主题、多场景推荐控制台、搜索页和详情页。后续可以继续统一视觉模板、增加更精细的筛选控件、反馈按钮、推荐解释面板和指标展示面板。
+   当前前端已经完成食谱主题、多场景推荐控制台、搜索页、详情页、智能对话推荐和专属菜谱推荐卡片跳转。后续可以继续统一视觉模板、增加更精细的筛选控件和推荐解释面板。

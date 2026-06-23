@@ -17,17 +17,23 @@
               <div class="max-w-[92%] rounded-2xl border px-4 py-3 text-sm leading-6 shadow-sm md:max-w-[85%]" :class="msg.role === 'user' ? 'border-slate-700 bg-primary-600 text-white' : 'border-slate-700 bg-slate-800 text-slate-200'">
                 <p class="whitespace-pre-wrap">{{ msg.content }}</p>
                 <div v-if="msg.recommendations && msg.recommendations.length" class="mt-4 space-y-4">
-                  <div v-for="item in msg.recommendations" :key="item.recipe_id" class="overflow-hidden rounded-xl border border-slate-700 bg-slate-900">
+                  <router-link
+                    v-for="item in msg.recommendations"
+                    :key="item.recipe_id || item.movie_id || item.movieId || item.rank"
+                    :to="recipeDetailPath(item)"
+                    class="group block overflow-hidden rounded-xl border border-slate-700 bg-slate-900 transition duration-200 hover:-translate-y-0.5 hover:border-emerald-400/80 hover:shadow-lg hover:shadow-emerald-950/30 focus:outline-none focus:ring-2 focus:ring-emerald-400"
+                    :aria-label="`查看菜谱详情：${item.title}`"
+                  >
                     <div class="grid gap-0 md:grid-cols-[180px_1fr]">
                       <div class="relative h-44 overflow-hidden bg-slate-800 md:h-full">
-                        <img v-if="item.image_url" :src="item.image_url" :alt="item.title" class="h-full w-full object-cover" />
+                        <img v-if="item.image_url" :src="item.image_url" :alt="item.title" class="h-full w-full object-cover transition duration-300 group-hover:scale-105" />
                         <div v-else class="flex h-full w-full items-center justify-center text-xs text-slate-500">暂无图片</div>
                         <div class="absolute left-3 top-3 rounded-full bg-black/60 px-2 py-1 text-xs text-white">{{ item.rank ? `#${item.rank}` : '推荐' }}</div>
                       </div>
                       <div class="p-4">
                         <div class="flex items-start justify-between gap-3">
                           <div>
-                            <h3 class="text-base font-semibold text-gray-100">{{ item.title }}</h3>
+                            <h3 class="text-base font-semibold text-gray-100 transition-colors group-hover:text-emerald-300">{{ item.title }}</h3>
                             <p class="mt-1 text-xs text-slate-500">Recipe ID: {{ item.recipe_id }}</p>
                           </div>
                           <span class="shrink-0 rounded-full bg-emerald-500/15 px-3 py-1 text-xs font-semibold text-emerald-200">
@@ -51,7 +57,7 @@
                         </div>
                       </div>
                     </div>
-                  </div>
+                  </router-link>
                 </div>
               </div>
             </div>
@@ -109,6 +115,7 @@ const scrollToBottom = async () => {
 
 const normalizeItem = (item = {}) => ({
   ...item,
+  recipe_id: item.recipe_id || item.movie_id || item.movieId,
   title: item.title || item.name || recipeTitle(item),
   image_url: recipeImage({
     ...item,
@@ -119,6 +126,8 @@ const normalizeItem = (item = {}) => ({
   reason: item.reason || item.final_reason || "这道菜和你的需求比较匹配。",
   match_points: Array.isArray(item.match_points) ? item.match_points : [],
 });
+
+const recipeDetailPath = (item = {}) => `/recipe/${item.recipe_id || item.movie_id || item.movieId}`;
 
 const sendMessage = async () => {
   if (!input.value || loading.value) return;

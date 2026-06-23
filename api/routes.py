@@ -50,7 +50,12 @@ from api.schemas import (
     ABMetricsResponse,
 )
 from app.config import PROJECT_ROOT, get_settings
-from monitor.metrics import record_model_inference, record_recommend_source, record_reduce
+from monitor.business_metrics import (
+    record_model_inference,
+    record_recommend_outcome,
+    record_recommend_request,
+    record_reduce,
+)
 from recommendation.inference_schemas import InferenceContext, ParallelInferenceResponse, ReducedRecommendation
 from recommendation.model_adapters import default_model_adapters
 from recommendation.parallel_inference import ParallelInferenceService
@@ -992,6 +997,11 @@ def _record_exposures(state, user_id: int, items: list[MovieItem], request_id: s
 
 
 def _offline_recommendation_items(user_id: int, top_k: int) -> list[MovieItem]:
+    items, _ = _offline_recommendation_items_with_source(user_id, top_k)
+    return items
+
+
+def _offline_recommendation_items_with_source(user_id: int, top_k: int) -> tuple[list[MovieItem], str]:
     """Build recommendations from offline artifacts inside a worker thread."""
     try:
         df, path = _read_cached_csv(OFFLINE_RECOMMENDATIONS_PATH)
@@ -1015,13 +1025,13 @@ def _offline_recommendation_items(user_id: int, top_k: int) -> list[MovieItem]:
                 record,
             )
             for record in _json_safe_records(user_recs.head(top_k))
-        ]
+        ], "final_csv"
 
     popular_records, _ = _popular_recipe_records(top_k)
     return [
         build_movie_item(record["movie_id"], record["title"], float(record.get("score") or 0.0), record)
         for record in popular_records
-    ]
+    ], "popular_fallback"
 
 
 # ---------- Application state dependency ----------
@@ -1199,6 +1209,7 @@ async def recommend(
     /recipes/recommend/{user_id}.
     """
     t0 = time.perf_counter()
+    record_recommend_request()
     if use_cache and state.cache:
         from feedback.realtime_recommender import RealtimeRecipeRecommender
 
@@ -1208,7 +1219,11 @@ async def recommend(
             elapsed = (time.perf_counter() - t0) * 1000
             realtime_result["cached"] = True
             realtime_result["took_ms"] = round(elapsed, 2)
-            record_recommend_source("redis_realtime")
+            record_recommend_outcome(
+                source="redis_realtime",
+                result_count=len(realtime_result.get("recommendations") or []),
+                cache_type="redis_realtime",
+            )
             return RecommendationResponse(**realtime_result)
 
     cache_key = f"recipe:offline_rec:user:{user_id}:k:{top_k}"
@@ -1218,7 +1233,11 @@ async def recommend(
             elapsed = (time.perf_counter() - t0) * 1000
             cached_result["cached"] = True
             cached_result["took_ms"] = round(elapsed, 2)
-            record_recommend_source("redis_offline")
+            record_recommend_outcome(
+                source="redis_offline",
+                result_count=len(cached_result.get("recommendations") or []),
+                cache_type="redis_offline",
+            )
             return RecommendationResponse(**cached_result)
 
     settings = get_settings()
@@ -1241,13 +1260,16 @@ async def recommend(
     if items:
         items = await run_in_threadpool(_supplement_recommendation_items, user_id, items, top_k)
     else:
-        items = await run_in_threadpool(_offline_recommendation_items, user_id, top_k)
-        source = "final_csv"
+        items, source = await run_in_threadpool(_offline_recommendation_items_with_source, user_id, top_k)
 
     if not items:
         items = await run_in_threadpool(_supplement_recommendation_items, user_id, [], top_k)
         source = "popular_fallback"
-    record_recommend_source(source)
+    record_recommend_outcome(
+        source=source,
+        result_count=len(items),
+        fallback_type="popular_fallback" if source == "popular_fallback" else None,
+    )
 
     elapsed = (time.perf_counter() - t0) * 1000
     result = RecommendationResponse(

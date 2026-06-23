@@ -110,6 +110,11 @@ class Settings(BaseSettings):
     parallel_inference_overall_timeout_ms: int = 1500
     parallel_inference_source_bonus: float = 0.05
 
+    # Monitoring
+    monitoring_enabled: bool = True
+    monitoring_system_collect_interval_seconds: float = 5.0
+    monitoring_http_metrics_enabled: bool = True
+
     @field_validator("debug", mode="before")
     @classmethod
     def parse_debug_flag(cls, value):

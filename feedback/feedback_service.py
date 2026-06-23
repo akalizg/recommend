@@ -8,6 +8,7 @@ from typing import Any
 
 from app.config import PROJECT_ROOT, get_settings
 from feedback.kafka_producer import FeedbackKafkaProducer
+from monitor.business_metrics import record_feedback_event, record_recommend_exposure
 
 
 VALID_FEEDBACK_TYPES = {"click", "like", "dislike", "not_interested", "seen", "rating"}
@@ -83,6 +84,7 @@ class FeedbackService:
             )
             conn.commit()
             feedback_id = int(cursor.lastrowid)
+        record_feedback_event(feedback_type)
 
         realtime_profile = self.update_realtime_profile(
             user_id=user_id,
@@ -151,6 +153,7 @@ class FeedbackService:
             )
             conn.commit()
             event_id = int(cursor.lastrowid)
+        record_recommend_exposure()
         kafka_event = {
             "event_type": "exposure",
             "user_id": user_id,

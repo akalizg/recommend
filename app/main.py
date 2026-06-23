@@ -39,6 +39,8 @@ from feedback.feedback_service import FeedbackService
 from experiment.ab_service import ABService
 from taste_twin import router as taste_twin_router
 from taste_twin.service import TasteTwinService
+from monitor.http_metrics import HTTPMetricsMiddleware
+from monitor.system_metrics import start_system_metrics_collector, stop_system_metrics_collector
 
 logger = logging.getLogger(__name__)
 
@@ -166,12 +168,21 @@ def _initialize_services_background() -> None:
 async def lifespan(app: FastAPI):
     """FastAPI lifespan: startup and shutdown events."""
     setup_logging()
-    logger.info(f"Starting {get_settings().app_name} v{get_settings().app_version}")
+    settings = get_settings()
+    logger.info(f"Starting {settings.app_name} v{settings.app_version}")
+    if settings.monitoring_enabled:
+        try:
+            start_system_metrics_collector(settings.monitoring_system_collect_interval_seconds)
+            logger.info("System metrics collector started")
+        except Exception:
+            logger.exception("System metrics collector failed to start")
     thread = threading.Thread(target=_initialize_services_background, name="service-init", daemon=True)
     thread.start()
     logger.info("FastAPI startup completed; recommendation services are initializing in background")
     yield
     logger.info("Shutting down...")
+    if settings.monitoring_enabled:
+        stop_system_metrics_collector()
     if _app_state.cache:
         try:
             _app_state.cache.pool.disconnect()
@@ -200,6 +211,8 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    if settings.monitoring_enabled and settings.monitoring_http_metrics_enabled:
+        app.add_middleware(HTTPMetricsMiddleware)
 
     app.include_router(router)
     app.include_router(chat_router)
